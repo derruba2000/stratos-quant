@@ -1,0 +1,28 @@
+[tool.poetry]
+name = "stratos-quant"
+version = "0.1.0"
+description = "Portfolio rebalancing platform with quantitative engines and local LLM advisory"
+authors = ["Stratos Quant Team"]
+readme = "README.md"
+packages = [{ include = "stratos_quant", from = "src" }]
+
+[tool.poetry.dependencies]
+python = "^3.12"
+lib-pybroker = "*"
+gradio = "*"
+pandas = "*"
+numpy = "*"
+sqlalchemy = "*"
+requests = "*"
+python-dotenv = "*"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "*"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[build-system]
+requires = ["poetry-core>=1.8.0"]
+build-backend = "poetry.core.masonry.api"

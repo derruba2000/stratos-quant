@@ -1,0 +1,8 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^ls -la \\.env pyproject\\.toml src tests && test -f /Users/joaoramo/Data/trading_experiment/portfolio_management\\.sqlite3 && echo DB_EXISTS \\|\\| echo DB_MISSING && poetry --version$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}
