@@ -15,6 +15,7 @@ class ConfigError(RuntimeError):
 class AppConfig:
     sqlite_db_path: Path
     ollama_model: str
+    ollama_base_url: str
 
 
 def load_settings(env_file: str | Path = ".env") -> AppConfig:
@@ -23,12 +24,14 @@ def load_settings(env_file: str | Path = ".env") -> AppConfig:
 
     sqlite_db_path = (os.getenv("SQLITE_DB_PATH") or "").strip()
     ollama_model = (os.getenv("OLLAMA_MODEL") or "").strip()
+    ollama_base_url = (os.getenv("OLLAMA_BASE_URL") or "").strip()
 
     missing_keys = [
         key
         for key, value in {
             "SQLITE_DB_PATH": sqlite_db_path,
             "OLLAMA_MODEL": ollama_model,
+            "OLLAMA_BASE_URL": ollama_base_url,
         }.items()
         if not value
     ]
@@ -49,4 +52,11 @@ def load_settings(env_file: str | Path = ".env") -> AppConfig:
             f"SQLITE_DB_PATH must point to a file: {db_path}"
         )
 
-    return AppConfig(sqlite_db_path=db_path, ollama_model=ollama_model)
+    if not ollama_base_url.startswith(("http://", "https://")):
+        raise ConfigError("OLLAMA_BASE_URL must be an http:// or https:// URL")
+
+    return AppConfig(
+        sqlite_db_path=db_path,
+        ollama_model=ollama_model,
+        ollama_base_url=ollama_base_url.rstrip("/"),
+    )
