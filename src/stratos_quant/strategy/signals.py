@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from pybroker import returnv
 
-from .models import AssetClassSignal
+from .models import AssetClassSignal, SecuritySignal
 
 
 TRADING_DAYS = 252
@@ -79,3 +79,19 @@ def signals_by_code(
     signals: Iterable[AssetClassSignal],
 ) -> dict[str, AssetClassSignal]:
     return {signal.asset_class_code: signal for signal in signals}
+
+
+def security_signals_from_statistics(
+    statistics: pd.DataFrame,
+) -> tuple[SecuritySignal, ...]:
+    return tuple(
+        SecuritySignal(
+            security_id=int(row.security_id),
+            ticker=str(row.ticker),
+            asset_class_code=str(row.asset_class_code),
+            trend_positive=bool(row.trend_positive),
+            momentum_12m=float(row.momentum_12m),
+            annualized_volatility=float(row.annualized_volatility),
+        )
+        for row in statistics.itertuples(index=False)
+    )

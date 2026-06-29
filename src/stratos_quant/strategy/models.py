@@ -55,12 +55,33 @@ class AssetClassSignal:
 
 
 @dataclass(frozen=True, slots=True)
+class SecuritySignal:
+    security_id: int
+    ticker: str
+    asset_class_code: str
+    trend_positive: bool
+    momentum_12m: float
+    annualized_volatility: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "security_id": self.security_id,
+            "ticker": self.ticker,
+            "asset_class_code": self.asset_class_code,
+            "trend_positive": self.trend_positive,
+            "momentum_12m": self.momentum_12m,
+            "annualized_volatility": self.annualized_volatility,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class AllocationResult:
     model: str
     as_of: date
     weights: Mapping[str, Decimal]
     signals: tuple[AssetClassSignal, ...]
     component_weights: Mapping[str, Mapping[str, Decimal]] | None = None
+    security_signals: tuple[SecuritySignal, ...] = ()
 
     def __post_init__(self) -> None:
         if sum(self.weights.values(), Decimal("0")) != ONE:
@@ -75,6 +96,9 @@ class AllocationResult:
                 for code, weight in sorted(self.weights.items())
             },
             "signals": [signal.to_dict() for signal in self.signals],
+            "security_signals": [
+                signal.to_dict() for signal in self.security_signals
+            ],
             "component_weights": (
                 {
                     component: {

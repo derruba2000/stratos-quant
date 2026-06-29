@@ -18,11 +18,15 @@ class OllamaClient:
         settings: AppConfig | None = None,
         *,
         session: requests.Session | None = None,
-        timeout: float = 120.0,
+        timeout: float | None = None,
     ) -> None:
         self.settings = settings or load_settings()
         self._session = session or requests.Session()
-        self.timeout = timeout
+        self.timeout = (
+            timeout
+            if timeout is not None
+            else self.settings.ollama_timeout_seconds
+        )
 
     def chat(
         self,

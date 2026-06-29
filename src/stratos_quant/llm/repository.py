@@ -94,3 +94,69 @@ class StrategyRepository:
                         "rationale": recommendation.rationale,
                     },
                 )
+
+    def get_run(self, run_id: int) -> dict[str, object]:
+        """Return one strategy run for dashboard rendering."""
+        with self._engine.connect() as connection:
+            row = connection.execute(
+                text("SELECT * FROM strategy_runs WHERE id = :run_id"),
+                {"run_id": run_id},
+            ).mappings().one()
+        return dict(row)
+
+    def get_recommendations(
+        self,
+        *,
+        run_id: int,
+        portfolio_id: int,
+    ) -> list[dict[str, object]]:
+        """Return recommendations enriched with security labels."""
+        with self._engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    """
+                    SELECT
+                        ar.id,
+                        ar.action_type,
+                        ar.target_weight,
+                        ar.estimated_trade_value,
+                        ar.llm_security_rationale,
+                        ar.is_executed,
+                        s.ticker,
+                        s.name,
+                        s.asset_class
+                    FROM asset_recommendations ar
+                    JOIN securities s ON s.id = ar.security_id
+                    WHERE ar.run_id = :run_id
+                      AND ar.portfolio_id = :portfolio_id
+                    ORDER BY ar.id
+                    """
+                ),
+                {"run_id": run_id, "portfolio_id": portfolio_id},
+            ).mappings().all()
+        return [dict(row) for row in rows]
+
+    def set_recommendation_executed(
+        self,
+        recommendation_id: int,
+        is_executed: bool,
+    ) -> None:
+        """Update the execution state of a generated trade."""
+        with self._engine.begin() as connection:
+            result = connection.execute(
+                text(
+                    """
+                    UPDATE asset_recommendations
+                    SET is_executed = :is_executed
+                    WHERE id = :recommendation_id
+                    """
+                ),
+                {
+                    "recommendation_id": recommendation_id,
+                    "is_executed": bool(is_executed),
+                },
+            )
+            if result.rowcount != 1:
+                raise ValueError(
+                    f"Recommendation does not exist: {recommendation_id}"
+                )

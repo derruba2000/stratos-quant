@@ -28,6 +28,7 @@ def test_load_settings_reads_expected_values(tmp_path, monkeypatch):
                 f"SQLITE_DB_PATH={db_file}",
                 "OLLAMA_MODEL=llama3",
                 "OLLAMA_BASE_URL=http://localhost:11434",
+                "OLLAMA_TIMEOUT_SECONDS=450",
             ]
         ),
         encoding="utf-8",
@@ -42,6 +43,7 @@ def test_load_settings_reads_expected_values(tmp_path, monkeypatch):
     assert settings.sqlite_db_path == Path(db_file)
     assert settings.ollama_model == "llama3"
     assert settings.ollama_base_url == "http://localhost:11434"
+    assert settings.ollama_timeout_seconds == 450
 
 
 def test_load_settings_raises_if_db_file_does_not_exist(tmp_path, monkeypatch):

@@ -3,6 +3,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any, Collection
 
+from stratos_quant.data import FundDataExtractor, PortfolioValuationService
 from stratos_quant.strategy import AllocationResult
 
 from .client import OllamaClient
@@ -108,3 +109,30 @@ class AdvisoryPipeline:
             recommendations=recommendations,
         )
         return recommendations
+
+    def screen_portfolio_asset_class(
+        self,
+        *,
+        run_id: int,
+        portfolio_id: int,
+        asset_class_code: str,
+        target_weight: Decimal,
+        fund_data: FundDataExtractor,
+        portfolio_data: PortfolioValuationService,
+    ) -> tuple[SecurityRecommendation, ...]:
+        """Extract candidates and current holdings before asking Ollama to screen."""
+        context = fund_data.extract_asset_class(asset_class_code)
+        valuation = portfolio_data.value_portfolio(portfolio_id, strict=False)
+        held_security_ids = {
+            holding.security_id
+            for holding in valuation.holdings
+            if holding.quantity != 0
+        }
+        return self.screen_asset_class(
+            run_id=run_id,
+            portfolio_id=portfolio_id,
+            asset_class_code=asset_class_code,
+            target_weight=target_weight,
+            candidate_context=context,
+            held_security_ids=held_security_ids,
+        )

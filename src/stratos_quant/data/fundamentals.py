@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Mapping
 
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
@@ -12,8 +12,17 @@ from stratos_quant.db import create_sqlite_engine
 class FundDataExtractor:
     """Extract Yahoo fund profiles, risk metrics, and performance by asset class."""
 
-    def __init__(self, engine: Engine | None = None) -> None:
+    def __init__(
+        self,
+        engine: Engine | None = None,
+        *,
+        asset_class_map: Mapping[str, str] | None = None,
+    ) -> None:
         self._engine = engine or create_sqlite_engine()
+        self._asset_class_map = {
+            ticker.upper(): asset_class.upper()
+            for ticker, asset_class in (asset_class_map or {}).items()
+        }
 
     def extract_asset_class(self, asset_class_code: str) -> dict[str, Any]:
         """Return JSON-ready baseline health data for securities in an asset class."""
@@ -24,12 +33,19 @@ class FundDataExtractor:
                     """
                     SELECT id, ticker, name, asset_class, currency_code
                     FROM securities
-                    WHERE UPPER(asset_class) = :asset_class_code
                     ORDER BY ticker
                     """
-                ),
-                {"asset_class_code": normalized_code},
+                )
             ).mappings().all()
+            securities = [
+                security
+                for security in securities
+                if self._asset_class_map.get(
+                    str(security["ticker"]).upper(),
+                    str(security["asset_class"]).upper(),
+                )
+                == normalized_code
+            ]
 
             results = []
             for security in securities:

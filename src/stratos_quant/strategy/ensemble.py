@@ -9,7 +9,7 @@ import pandas as pd
 
 from .base import BaseAllocationEngine
 from .models import AllocationResult, normalize_weights
-from .signals import signals_by_code
+from .signals import security_signals_from_statistics, signals_by_code
 
 
 class EnsembleAllocationEngine(BaseAllocationEngine):
@@ -40,7 +40,7 @@ class EnsembleAllocationEngine(BaseAllocationEngine):
         *,
         as_of: date | None = None,
     ) -> AllocationResult:
-        _, signals, resolved_as_of = self._prepare(prices, as_of)
+        statistics, signals, resolved_as_of = self._prepare(prices, as_of)
         signal_map = signals_by_code(signals)
         strategies: dict[str, Callable[[], dict[str, Decimal]]] = {
             "moving_average": lambda: self._moving_average_vote(signal_map),
@@ -72,6 +72,7 @@ class EnsembleAllocationEngine(BaseAllocationEngine):
             weights=normalize_weights(blended),
             signals=signals,
             component_weights=component_weights,
+            security_signals=security_signals_from_statistics(statistics),
         )
 
     def _moving_average_vote(self, signals) -> dict[str, Decimal]:

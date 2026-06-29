@@ -4,7 +4,7 @@ from .ensemble import EnsembleAllocationEngine
 from .errors import InsufficientPriceHistoryError, StrategyError
 from .hierarchical import HierarchicalAllocationEngine
 from .market_data import PriceHistoryLoader
-from .models import AllocationResult, AssetClassSignal
+from .models import AllocationResult, AssetClassSignal, SecuritySignal
 
 __all__ = [
     "AllocationResult",
@@ -13,5 +13,6 @@ __all__ = [
     "HierarchicalAllocationEngine",
     "InsufficientPriceHistoryError",
     "PriceHistoryLoader",
+    "SecuritySignal",
     "StrategyError",
 ]

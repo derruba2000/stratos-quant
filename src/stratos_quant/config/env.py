@@ -16,6 +16,7 @@ class AppConfig:
     sqlite_db_path: Path
     ollama_model: str
     ollama_base_url: str
+    ollama_timeout_seconds: float = 300.0
 
 
 def load_settings(env_file: str | Path = ".env") -> AppConfig:
@@ -25,7 +26,9 @@ def load_settings(env_file: str | Path = ".env") -> AppConfig:
     sqlite_db_path = (os.getenv("SQLITE_DB_PATH") or "").strip()
     ollama_model = (os.getenv("OLLAMA_MODEL") or "").strip()
     ollama_base_url = (os.getenv("OLLAMA_BASE_URL") or "").strip()
-
+    ollama_timeout_value = (
+        os.getenv("OLLAMA_TIMEOUT_SECONDS") or "300"
+    ).strip()
     missing_keys = [
         key
         for key, value in {
@@ -54,9 +57,15 @@ def load_settings(env_file: str | Path = ".env") -> AppConfig:
 
     if not ollama_base_url.startswith(("http://", "https://")):
         raise ConfigError("OLLAMA_BASE_URL must be an http:// or https:// URL")
-
+    try:
+        ollama_timeout_seconds = float(ollama_timeout_value)
+    except ValueError as exc:
+        raise ConfigError("OLLAMA_TIMEOUT_SECONDS must be a number") from exc
+    if ollama_timeout_seconds <= 0:
+        raise ConfigError("OLLAMA_TIMEOUT_SECONDS must be greater than zero")
     return AppConfig(
         sqlite_db_path=db_path,
         ollama_model=ollama_model,
         ollama_base_url=ollama_base_url.rstrip("/"),
+        ollama_timeout_seconds=ollama_timeout_seconds,
     )

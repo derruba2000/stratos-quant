@@ -100,7 +100,7 @@ def test_engines_reject_unusable_price_history():
         HierarchicalAllocationEngine().allocate(short_prices)
 
 
-def test_price_loader_filters_dates_and_maps_strategy_asset_classes(tmp_path):
+def test_price_loader_filters_dates_and_uses_database_asset_classes(tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'prices.sqlite3'}")
     with engine.begin() as connection:
         connection.exec_driver_sql(
@@ -122,7 +122,7 @@ def test_price_loader_filters_dates_and_maps_strategy_asset_classes(tmp_path):
             """
         )
         connection.exec_driver_sql(
-            "INSERT INTO securities VALUES (1, 'SPY', 'ETF'), (2, 'AGG', 'ETF')"
+            "INSERT INTO securities VALUES (1, 'SPY', 'EQUITY'), (2, 'AGG', 'BOND')"
         )
         connection.exec_driver_sql(
             """
@@ -137,7 +137,6 @@ def test_price_loader_filters_dates_and_maps_strategy_asset_classes(tmp_path):
     frame = PriceHistoryLoader(engine).load(
         security_ids=[1, 2],
         as_of=date(2025, 1, 1),
-        asset_class_map={"SPY": "EQUITY", "AGG": "BOND"},
     )
 
     assert len(frame) == 2

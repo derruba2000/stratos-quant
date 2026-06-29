@@ -19,6 +19,9 @@ python-dotenv = "*"
 [tool.poetry.group.dev.dependencies]
 pytest = "*"
 
+[tool.poetry.scripts]
+stratos-quant-ui = "stratos_quant.ui.app:main"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]

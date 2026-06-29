@@ -7,6 +7,7 @@ import pandas as pd
 
 from .base import BaseAllocationEngine
 from .models import AllocationResult, normalize_weights
+from .signals import security_signals_from_statistics
 
 
 class HierarchicalAllocationEngine(BaseAllocationEngine):
@@ -29,7 +30,7 @@ class HierarchicalAllocationEngine(BaseAllocationEngine):
         *,
         as_of: date | None = None,
     ) -> AllocationResult:
-        _, signals, resolved_as_of = self._prepare(prices, as_of)
+        statistics, signals, resolved_as_of = self._prepare(prices, as_of)
         eligible = [
             signal
             for signal in signals
@@ -71,4 +72,5 @@ class HierarchicalAllocationEngine(BaseAllocationEngine):
             as_of=resolved_as_of,
             weights=weights,
             signals=signals,
+            security_signals=security_signals_from_statistics(statistics),
         )
