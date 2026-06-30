@@ -10,7 +10,7 @@ from sqlalchemy.engine import Engine
 
 from stratos_quant.config import AppConfig, load_settings
 from stratos_quant.data import FundDataExtractor, PortfolioValuationService
-from stratos_quant.llm import AdvisoryPipeline, OllamaClient, StrategyRepository
+from stratos_quant.llm import AdvisoryPipeline, StrategyRepository, create_chat_client
 from stratos_quant.reconciliation import ReconciliationService
 from stratos_quant.strategy import (
     EnsembleAllocationEngine,
@@ -78,7 +78,7 @@ class DashboardController:
         }
         self.repository = StrategyRepository(engine)
         self.pipeline = AdvisoryPipeline(
-            OllamaClient(self.settings),
+            create_chat_client(self.settings),
             self.repository,
         )
         self.fund_data = FundDataExtractor(
@@ -111,6 +111,10 @@ class DashboardController:
             )
             for row in rows
         ]
+
+    def _llm_provider_label(self) -> str:
+        settings = getattr(self, "settings", None)
+        return getattr(settings, "llm_provider_label", "Ollama")
 
     def run_analysis(
         self,
@@ -169,7 +173,7 @@ class DashboardController:
                     component_frame,
                     (
                         f"### Ledger warning\n\n{ledger_warning}\n\n"
-                        "### Ollama strategy rationale\n\n"
+                        f"### {self._llm_provider_label()} strategy rationale\n\n"
                         f"{run['llm_overall_rationale']}"
                     ),
                     (

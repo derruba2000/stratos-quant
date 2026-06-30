@@ -11,6 +11,9 @@ recommendation as executed only updates its status in SQLite.
 Detailed component and interaction documentation is available in
 [doc/architecture.md](doc/architecture.md).
 
+A comprehensive strategy and asset-allocation workflow guide is available in
+[doc/strategy_asset_allocation_workflows.md](doc/strategy_asset_allocation_workflows.md).
+
 ## What is implemented
 
 - Portfolio holdings and cash reconstruction from the transaction ledger.
@@ -53,13 +56,15 @@ SQLite recommendations and Gradio review
 - Python 3.12 or a compatible Python version allowed by `^3.12`.
 - Poetry.
 - An existing SQLite portfolio database using the schema described below.
-- A running local [Ollama](https://ollama.com/) server.
-- The model configured in `OLLAMA_MODEL` already downloaded in Ollama.
+- Either a running local [Ollama](https://ollama.com/) server or NVIDIA API
+  credentials.
 
 The PyPI package that provides the `pybroker` import is named
 `lib-pybroker`.
 
-## Installation
+## Run The App
+
+Install dependencies:
 
 ```bash
 poetry env use 3.12
@@ -67,19 +72,15 @@ poetry install
 cp .env.example .env
 ```
 
-Configure `.env`:
+Configure `.env` for Ollama:
 
 ```dotenv
 SQLITE_DB_PATH=/absolute/path/to/portfolio_management.sqlite3
+API_USAGE=ollama
 OLLAMA_MODEL=gemma4
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_TIMEOUT_SECONDS=300
 ```
-
-The first three values are required. `OLLAMA_TIMEOUT_SECONDS` is optional and
-defaults to 300 seconds for slower local models. Startup fails with a clear configuration error
-when a value is missing, the database path is invalid, or the Ollama URL is not
-an HTTP(S) URL.
 
 Confirm that Ollama is running and the configured model exists:
 
@@ -88,7 +89,33 @@ ollama list
 curl http://localhost:11434/api/tags
 ```
 
-## Run the dashboard
+Or configure `.env` for NVIDIA:
+
+```dotenv
+SQLITE_DB_PATH=/absolute/path/to/portfolio_management.sqlite3
+API_USAGE=NVIDIA
+NVIDIA_API_MODEL=meta/llama-3.3-70b-instruct
+NVIDIA_API_KEY=your-api-key
+OLLAMA_TIMEOUT_SECONDS=300
+NVIDIA_TIMEOUT_SECONDS=900
+# Optional, only when your network requires a custom CA bundle:
+# NVIDIA_CA_BUNDLE=/absolute/path/to/corporate-ca.pem
+# Local/dev fallback for certificate interception issues:
+# NVIDIA_VERIFY_SSL=false
+```
+
+`SQLITE_DB_PATH` is always required. When `API_USAGE=ollama`, `OLLAMA_MODEL`
+and `OLLAMA_BASE_URL` are required. When `API_USAGE=NVIDIA`,
+`NVIDIA_API_MODEL` and `NVIDIA_API_KEY` are required.
+`OLLAMA_TIMEOUT_SECONDS` is optional and defaults to 300 seconds.
+`NVIDIA_TIMEOUT_SECONDS` is optional and defaults to `OLLAMA_TIMEOUT_SECONDS`;
+increase it for slower hosted models. NVIDIA requests use the certificate
+bundle included with `requests` by default. If your network uses a private or
+corporate certificate authority and you see `CERTIFICATE_VERIFY_FAILED`, set
+`NVIDIA_CA_BUNDLE` to a PEM file containing that CA chain. For local debugging
+only, `NVIDIA_VERIFY_SSL=false` disables certificate verification.
+
+Start the dashboard:
 
 ```bash
 poetry run stratos-quant-ui
@@ -117,7 +144,8 @@ The dashboard provides:
    `asset_recommendations.is_executed`.
 
 An analysis run writes to the configured database and calls the configured local
-Ollama endpoint. It does not submit an order to any external service.
+Ollama endpoint or NVIDIA API. It does not submit an order to any external
+service.
 
 ## Database expectations
 
@@ -139,6 +167,7 @@ Stratos Quant creates these strategy tables if they are absent:
 
 - `strategy_runs`
 - `strategy_target_allocations`
+- `strategy_allocation_signals`
 - `asset_recommendations`
 
 ### Transaction conventions

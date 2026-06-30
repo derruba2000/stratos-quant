@@ -6,7 +6,7 @@ from typing import Any, Collection
 from stratos_quant.data import FundDataExtractor, PortfolioValuationService
 from stratos_quant.strategy import AllocationResult
 
-from .client import OllamaClient
+from .client import ChatClient
 from .errors import OllamaResponseError
 from .models import SecurityRecommendation
 from .prompts import (
@@ -20,11 +20,11 @@ from .repository import StrategyRepository
 
 
 class AdvisoryPipeline:
-    """Generate and persist Ollama strategy audits and ticker selections."""
+    """Generate and persist LLM strategy audits and ticker selections."""
 
     def __init__(
         self,
-        client: OllamaClient,
+        client: ChatClient,
         repository: StrategyRepository,
     ) -> None:
         self.client = client
@@ -43,7 +43,7 @@ class AdvisoryPipeline:
         return self.repository.create_run(
             portfolio_id=portfolio_id,
             allocation=allocation,
-            llm_model=self.client.settings.ollama_model,
+            llm_model=self.client.settings.llm_model,
             rationale=rationale,
         )
 

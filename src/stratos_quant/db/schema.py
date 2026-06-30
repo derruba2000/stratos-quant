@@ -28,6 +28,24 @@ EPIC4_SCHEMA = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS strategy_allocation_signals (
+        id INTEGER NOT NULL PRIMARY KEY,
+        run_id INTEGER NOT NULL,
+        signal_timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        signal_scope VARCHAR(16) NOT NULL,
+        asset_class_code VARCHAR(32) NOT NULL,
+        security_id INTEGER,
+        ticker TEXT,
+        trend_positive BOOLEAN NOT NULL,
+        momentum_12m REAL,
+        annualized_volatility REAL,
+        security_count INTEGER NOT NULL,
+        FOREIGN KEY(run_id) REFERENCES strategy_runs (id),
+        FOREIGN KEY(asset_class_code) REFERENCES asset_classes (code),
+        FOREIGN KEY(security_id) REFERENCES securities (id)
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS asset_recommendations (
         id INTEGER NOT NULL PRIMARY KEY,
         run_id INTEGER NOT NULL,

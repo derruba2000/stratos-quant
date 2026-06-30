@@ -66,7 +66,8 @@ def build_app(controller: DashboardController | None = None) -> gr.Blocks:
             )
             gr.Markdown(
                 f"**Database:** `{Path(settings.sqlite_db_path).name}` &nbsp; · "
-                f"&nbsp; **Ollama model:** `{settings.ollama_model}`"
+                f"&nbsp; **LLM provider:** `{settings.llm_provider_label}` &nbsp; · "
+                f"&nbsp; **Model:** `{settings.llm_model}`"
             )
 
             with gr.Row():
@@ -130,9 +131,9 @@ def build_app(controller: DashboardController | None = None) -> gr.Blocks:
                 wrap=True,
             )
 
-            gr.Markdown("## Ollama strategic rationale log")
+            gr.Markdown(f"## {settings.llm_provider_label} strategic rationale log")
             rationale = gr.Markdown(
-                "Run an analysis to generate the local model's audit.",
+                "Run an analysis to generate the model's audit.",
                 elem_classes="sq-rationale",
             )
 

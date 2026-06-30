@@ -3,28 +3,37 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 import json
+from types import SimpleNamespace
 
 import pytest
+from openai import OpenAIError
 from sqlalchemy import create_engine, inspect, text
 
 from stratos_quant.config import AppConfig
 from stratos_quant.llm import (
     AdvisoryPipeline,
+    NvidiaClient,
+    OllamaError,
     OllamaClient,
     OllamaResponseError,
     StrategyRepository,
+    create_chat_client,
 )
+import stratos_quant.llm.client as llm_client_module
 from stratos_quant.llm.prompts import allocation_prompt, screening_prompt
-from stratos_quant.strategy import AllocationResult, AssetClassSignal
+from stratos_quant.strategy import AllocationResult, AssetClassSignal, SecuritySignal
 
 
 class FakeResponse:
-    def __init__(self, body, *, status_error=None):
+    def __init__(self, body, *, status_error=None, status_code=200, text=""):
         self._body = body
         self._status_error = status_error
+        self.status_code = status_code
+        self.text = text
 
     def raise_for_status(self):
         if self._status_error is not None:
+            self._status_error.response = self
             raise self._status_error
 
     def json(self):
@@ -36,9 +45,46 @@ class FakeSession:
         self.response = response
         self.calls = []
 
-    def post(self, url, *, json, timeout):
-        self.calls.append({"url": url, "json": json, "timeout": timeout})
+    def post(self, url, *, json, timeout, headers=None, verify=None):
+        self.calls.append(
+            {
+                "url": url,
+                "json": json,
+                "timeout": timeout,
+                "headers": headers,
+                "verify": verify,
+            }
+        )
         return self.response
+
+
+class FakeOpenAICompletions:
+    def __init__(self, content=None, error=None):
+        self.content = content
+        self.error = error
+        self.calls = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        if self.error is not None:
+            raise self.error
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content=self.content)
+                )
+            ]
+        )
+
+
+class FakeOpenAIClient:
+    def __init__(self, content=None, error=None):
+        self.completions = FakeOpenAICompletions(content=content, error=error)
+        self.chat = SimpleNamespace(completions=self.completions)
+
+
+class FakeOpenAINotFoundError(OpenAIError):
+    status_code = 404
 
 
 class FakeOllamaClient:
@@ -122,6 +168,151 @@ def test_ollama_client_uses_configured_endpoint_model_and_json_schema(tmp_path):
     assert call["json"]["model"] == "gemma4"
     assert call["json"]["stream"] is False
     assert call["json"]["format"] == {"type": "object"}
+
+
+def test_nvidia_client_uses_configured_model_key_and_json_schema(tmp_path):
+    db_file = tmp_path / "db.sqlite3"
+    db_file.touch()
+    settings = AppConfig(
+        sqlite_db_path=db_file,
+        ollama_model="",
+        ollama_base_url="",
+        api_usage="NVIDIA",
+        nvidia_api_model="nvidia/llama-3.1-nemotron",
+        nvidia_api_key="secret-key",
+    )
+    openai_client = FakeOpenAIClient(content='{"recommendations":[]}')
+
+    result = NvidiaClient(
+        settings,
+        openai_client=openai_client,
+        timeout=9,
+    ).chat_json(
+        system_prompt="system",
+        user_prompt="user",
+        response_schema={"type": "object"},
+    )
+
+    assert result == {"recommendations": []}
+    call = openai_client.completions.calls[0]
+    assert call["model"] == "nvidia/llama-3.1-nemotron"
+    assert call["max_tokens"] == 4096
+    assert call["messages"][0] == {"role": "system", "content": "system"}
+    assert call["messages"][1]["role"] == "user"
+    assert call["messages"][1]["content"].startswith("user")
+    assert '"type": "object"' in call["messages"][1]["content"]
+
+
+def test_chat_client_factory_uses_nvidia_when_configured(tmp_path):
+    db_file = tmp_path / "db.sqlite3"
+    db_file.touch()
+    settings = AppConfig(
+        sqlite_db_path=db_file,
+        ollama_model="",
+        ollama_base_url="",
+        api_usage="NVIDIA",
+        nvidia_api_model="nvidia/model",
+        nvidia_api_key="secret-key",
+    )
+
+    assert isinstance(create_chat_client(settings), NvidiaClient)
+
+
+def test_nvidia_client_can_disable_ssl_verification(tmp_path):
+    db_file = tmp_path / "db.sqlite3"
+    db_file.touch()
+    settings = AppConfig(
+        sqlite_db_path=db_file,
+        ollama_model="",
+        ollama_base_url="",
+        api_usage="NVIDIA",
+        nvidia_api_model="nvidia/model",
+        nvidia_api_key="secret-key",
+        nvidia_verify_ssl=False,
+    )
+    openai_client = FakeOpenAIClient(content="ok")
+
+    result = NvidiaClient(
+        settings,
+        openai_client=openai_client,
+        timeout=9,
+    ).chat(
+        system_prompt="system",
+        user_prompt="user",
+    )
+
+    assert result == "ok"
+    assert openai_client.completions.calls[0]["model"] == "nvidia/model"
+
+
+def test_nvidia_client_constructs_openai_client_with_httpx_verify_false(
+    tmp_path,
+    monkeypatch,
+):
+    db_file = tmp_path / "db.sqlite3"
+    db_file.touch()
+    settings = AppConfig(
+        sqlite_db_path=db_file,
+        ollama_model="",
+        ollama_base_url="",
+        api_usage="NVIDIA",
+        nvidia_api_model="nvidia/model",
+        nvidia_api_key="secret-key",
+        nvidia_verify_ssl=False,
+    )
+    httpx_calls = []
+    openai_calls = []
+
+    def fake_httpx_client(**kwargs):
+        httpx_calls.append(kwargs)
+        return object()
+
+    def fake_openai(**kwargs):
+        openai_calls.append(kwargs)
+        return FakeOpenAIClient(content="ok")
+
+    monkeypatch.setattr(llm_client_module.httpx, "Client", fake_httpx_client)
+    monkeypatch.setattr(llm_client_module, "OpenAI", fake_openai)
+
+    result = NvidiaClient(settings, timeout=9).chat(
+        system_prompt="system",
+        user_prompt="user",
+    )
+
+    assert result == "ok"
+    assert httpx_calls == [{"verify": False, "timeout": 9}]
+    assert openai_calls[0]["base_url"] == "https://integrate.api.nvidia.com/v1"
+    assert openai_calls[0]["api_key"] == "secret-key"
+    assert openai_calls[0]["timeout"] == 9
+
+
+def test_nvidia_client_404_mentions_model_access_or_slug(tmp_path):
+    db_file = tmp_path / "db.sqlite3"
+    db_file.touch()
+    settings = AppConfig(
+        sqlite_db_path=db_file,
+        ollama_model="",
+        ollama_base_url="",
+        api_usage="NVIDIA",
+        nvidia_api_model="google/gemma-7b",
+        nvidia_api_key="secret-key",
+    )
+    openai_client = FakeOpenAIClient(
+        error=FakeOpenAINotFoundError("404 Client Error: Not Found")
+    )
+
+    with pytest.raises(OllamaError) as exc_info:
+        NvidiaClient(
+            settings,
+            openai_client=openai_client,
+            timeout=9,
+        ).chat_json(
+            system_prompt="system",
+            user_prompt="user",
+            response_schema={"type": "object"},
+        )
+
+    assert "model slug is not available" in str(exc_info.value)
 
 
 def test_prompts_include_strategy_evidence_and_candidate_kpis(allocation):
@@ -218,6 +409,7 @@ def test_pipeline_persists_rationale_targets_and_recommendations(
     assert set(inspect(advisory_engine).get_table_names()) >= {
         "strategy_runs",
         "strategy_target_allocations",
+        "strategy_allocation_signals",
         "asset_recommendations",
     }
     with advisory_engine.connect() as connection:
@@ -233,13 +425,98 @@ def test_pipeline_persists_rationale_targets_and_recommendations(
             text("SELECT * FROM asset_recommendations WHERE run_id = :id"),
             {"id": run_id},
         ).mappings().one()
+        signal = connection.execute(
+            text("SELECT * FROM strategy_allocation_signals WHERE run_id = :id"),
+            {"id": run_id},
+        ).mappings().one()
 
     assert run["llm_model_used"] == "gemma4"
     assert run["llm_overall_rationale"].startswith("Positive trend")
     assert Decimal(str(target["target_weight"])) == Decimal("1")
+    assert signal["run_id"] == run_id
+    assert signal["signal_timestamp"] is not None
+    assert signal["signal_scope"] == "ASSET_CLASS"
+    assert signal["asset_class_code"] == "ETF"
+    assert signal["security_id"] is None
+    assert signal["ticker"] is None
+    assert signal["trend_positive"] == 1
+    assert signal["momentum_12m"] == 0.24
+    assert signal["annualized_volatility"] == 0.13
+    assert signal["security_count"] == 2
     assert recommendation["action_type"] == "BUY"
     assert Decimal(str(recommendation["estimated_trade_value"])) == Decimal("0")
     assert recommendation["is_executed"] == 0
+
+
+def test_repository_persists_security_signal_calculations(
+    advisory_engine,
+    tmp_path,
+):
+    allocation = AllocationResult(
+        model="HIERARCHICAL",
+        as_of=date(2026, 6, 25),
+        weights={"ETF": Decimal("1.0000000000")},
+        signals=(
+            AssetClassSignal(
+                asset_class_code="ETF",
+                trend_positive=True,
+                momentum_12m=0.24,
+                annualized_volatility=0.13,
+                security_count=1,
+            ),
+        ),
+        security_signals=(
+            SecuritySignal(
+                security_id=10,
+                ticker="LOWFEE",
+                asset_class_code="ETF",
+                trend_positive=True,
+                momentum_12m=0.31,
+                annualized_volatility=0.09,
+            ),
+        ),
+    )
+    settings = AppConfig(
+        sqlite_db_path=tmp_path / "unused.sqlite3",
+        ollama_model="gemma4",
+        ollama_base_url="http://localhost:11434",
+    )
+    client = FakeOllamaClient(
+        settings,
+        rationale="Rationale",
+        screening_response={"recommendations": []},
+    )
+    repository = StrategyRepository(advisory_engine)
+    pipeline = AdvisoryPipeline(client, repository)
+
+    run_id = pipeline.rationalize_allocation(
+        portfolio_id=7,
+        allocation=allocation,
+    )
+
+    with advisory_engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                """
+                SELECT *
+                FROM strategy_allocation_signals
+                WHERE run_id = :run_id
+                ORDER BY signal_scope
+                """
+            ),
+            {"run_id": run_id},
+        ).mappings().all()
+
+    assert [row["signal_scope"] for row in rows] == ["ASSET_CLASS", "SECURITY"]
+    security_row = rows[1]
+    assert security_row["signal_timestamp"] is not None
+    assert security_row["security_id"] == 10
+    assert security_row["ticker"] == "LOWFEE"
+    assert security_row["asset_class_code"] == "ETF"
+    assert security_row["trend_positive"] == 1
+    assert security_row["momentum_12m"] == 0.31
+    assert security_row["annualized_volatility"] == 0.09
+    assert security_row["security_count"] == 1
 
 
 def test_pipeline_rejects_hallucinated_candidate_before_persistence(

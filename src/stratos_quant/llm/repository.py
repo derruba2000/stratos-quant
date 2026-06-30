@@ -60,6 +60,53 @@ class StrategyRepository:
                         "target_weight": target_weight,
                     },
                 )
+            for signal in allocation.signals:
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO strategy_allocation_signals
+                            (run_id, signal_scope, asset_class_code, security_id,
+                             ticker, trend_positive, momentum_12m,
+                             annualized_volatility, security_count)
+                        VALUES
+                            (:run_id, 'ASSET_CLASS', :asset_class_code, NULL,
+                             NULL, :trend_positive, :momentum_12m,
+                             :annualized_volatility, :security_count)
+                        """
+                    ),
+                    {
+                        "run_id": run_id,
+                        "asset_class_code": signal.asset_class_code,
+                        "trend_positive": signal.trend_positive,
+                        "momentum_12m": signal.momentum_12m,
+                        "annualized_volatility": signal.annualized_volatility,
+                        "security_count": signal.security_count,
+                    },
+                )
+            for signal in allocation.security_signals:
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO strategy_allocation_signals
+                            (run_id, signal_scope, asset_class_code, security_id,
+                             ticker, trend_positive, momentum_12m,
+                             annualized_volatility, security_count)
+                        VALUES
+                            (:run_id, 'SECURITY', :asset_class_code, :security_id,
+                             :ticker, :trend_positive, :momentum_12m,
+                             :annualized_volatility, 1)
+                        """
+                    ),
+                    {
+                        "run_id": run_id,
+                        "asset_class_code": signal.asset_class_code,
+                        "security_id": signal.security_id,
+                        "ticker": signal.ticker,
+                        "trend_positive": signal.trend_positive,
+                        "momentum_12m": signal.momentum_12m,
+                        "annualized_volatility": signal.annualized_volatility,
+                    },
+                )
         return int(run_id)
 
     def save_recommendations(
