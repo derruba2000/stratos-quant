@@ -323,7 +323,8 @@ class ReconciliationService:
                             UPDATE asset_recommendations
                             SET action_type = :action_type,
                                 target_weight = :target_weight,
-                                estimated_trade_value = :estimated_trade_value
+                                estimated_trade_value = :estimated_trade_value,
+                                recommendation_timestamp = CURRENT_TIMESTAMP
                             WHERE id = :recommendation_id
                               AND is_executed = 0
                             """
@@ -340,11 +341,12 @@ class ReconciliationService:
                             INSERT INTO asset_recommendations
                                 (run_id, portfolio_id, security_id, action_type,
                                  target_weight, estimated_trade_value,
-                                 llm_security_rationale, is_executed)
+                                 recommendation_timestamp, llm_security_rationale,
+                                 is_executed)
                             VALUES
                                 (:run_id, :portfolio_id, :security_id, :action_type,
                                  :target_weight, :estimated_trade_value,
-                                 :rationale, 0)
+                                 CURRENT_TIMESTAMP, :rationale, 0)
                             """
                         ),
                         parameters,

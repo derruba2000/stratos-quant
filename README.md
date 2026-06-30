@@ -147,6 +147,41 @@ An analysis run writes to the configured database and calls the configured local
 Ollama endpoint or NVIDIA API. It does not submit an order to any external
 service.
 
+## Run Batch Strategy Reports
+
+Run both allocation models for all active portfolios and write Markdown reports
+to the `strategies/` subfolder:
+
+```bash
+poetry run stratos-quant-strategies
+```
+
+Filter to live or test accounts:
+
+```bash
+poetry run stratos-quant-strategies --account-mode live
+poetry run stratos-quant-strategies --account-mode test
+```
+
+Filter to one or more exact portfolio names, and optionally one model:
+
+```bash
+poetry run stratos-quant-strategies \
+  --portfolio-name "Core ISA" \
+  --portfolio-name "Paper ISA" \
+  --model Hierarchical
+```
+
+Each report is written as:
+
+```text
+strategies/YYYYMMDD_HHMMSS_<portfolio name>_<allocation model>.md
+```
+
+The batch command uses the same workflow as the dashboard, so strategy runs,
+target allocations, allocation signals, and recommendations are persisted in
+SQLite with timestamps before the human-readable Markdown report is written.
+
 ## Database expectations
 
 The source database must contain the portfolio and market-data tables used by

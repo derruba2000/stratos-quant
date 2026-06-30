@@ -124,11 +124,12 @@ class StrategyRepository:
                         INSERT INTO asset_recommendations
                             (run_id, portfolio_id, security_id, action_type,
                              target_weight, estimated_trade_value,
-                             llm_security_rationale, is_executed)
+                             recommendation_timestamp, llm_security_rationale,
+                             is_executed)
                         VALUES
                             (:run_id, :portfolio_id, :security_id, :action_type,
                              :target_weight, :estimated_trade_value,
-                             :rationale, 0)
+                             CURRENT_TIMESTAMP, :rationale, 0)
                         """
                     ),
                     {

@@ -13,6 +13,7 @@ from stratos_quant.data import FundDataExtractor, PortfolioValuationService
 from stratos_quant.llm import AdvisoryPipeline, StrategyRepository, create_chat_client
 from stratos_quant.reconciliation import ReconciliationService
 from stratos_quant.strategy import (
+    AllocationResult,
     EnsembleAllocationEngine,
     HierarchicalAllocationEngine,
     PriceHistoryLoader,
@@ -120,6 +121,8 @@ class DashboardController:
         self,
         portfolio_id: int | str,
         model_name: str,
+        *,
+        precomputed_allocation: AllocationResult | None = None,
     ) -> tuple[
         pd.DataFrame,
         pd.DataFrame,
@@ -131,12 +134,21 @@ class DashboardController:
         int | None,
         str,
     ]:
-        """Run optimization, LLM screening, reconciliation, and persistence."""
+        """Run optimization, LLM screening, reconciliation, and persistence.
+
+        When *precomputed_allocation* is provided (e.g. from a batch runner that
+        already computed signals once for all portfolios), the price-history scan
+        inside the allocation engine is skipped.
+        """
         try:
             resolved_portfolio_id = int(portfolio_id)
             strategy_engine = self.engines[model_name]
             valuation = self.valuation.value_portfolio(resolved_portfolio_id)
-            allocation = strategy_engine.run(asset_class_map=self.asset_class_map)
+            allocation = (
+                precomputed_allocation
+                if precomputed_allocation is not None
+                else strategy_engine.run(asset_class_map=self.asset_class_map)
+            )
             current_frame = self._current_allocation_frame(valuation)
             target_frame = self._allocation_target_frame(valuation, allocation)
             kpi_frame = self._strategy_kpi_frame(allocation)

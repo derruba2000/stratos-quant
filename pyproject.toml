@@ -23,6 +23,7 @@ pytest = "*"
 
 [tool.poetry.scripts]
 stratos-quant-ui = "stratos_quant.ui.app:main"
+stratos-quant-strategies = "stratos_quant.batch:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

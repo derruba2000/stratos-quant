@@ -54,6 +54,7 @@ EPIC4_SCHEMA = (
         action_type VARCHAR(10) NOT NULL,
         target_weight DECIMAL(32, 10) NOT NULL,
         estimated_trade_value DECIMAL(32, 10) NOT NULL,
+        recommendation_timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         llm_security_rationale TEXT NOT NULL,
         is_executed BOOLEAN NOT NULL DEFAULT 0,
         FOREIGN KEY(run_id) REFERENCES strategy_runs (id),
@@ -63,9 +64,35 @@ EPIC4_SCHEMA = (
     """,
 )
 
+SCHEMA_UPGRADES = {
+    "asset_recommendations": {
+        "recommendation_timestamp": (
+            "ALTER TABLE asset_recommendations "
+            "ADD COLUMN recommendation_timestamp DATETIME"
+        ),
+    },
+}
+
 
 def ensure_strategy_schema(engine: Engine) -> None:
     """Create the Epic 4 strategy persistence tables when absent."""
     with engine.begin() as connection:
         for statement in EPIC4_SCHEMA:
             connection.execute(text(statement))
+        for table_name, column_upgrades in SCHEMA_UPGRADES.items():
+            existing_columns = {
+                str(row._mapping["name"])
+                for row in connection.execute(text(f"PRAGMA table_info({table_name})"))
+            }
+            for column_name, statement in column_upgrades.items():
+                if column_name not in existing_columns:
+                    connection.execute(text(statement))
+        connection.execute(
+            text(
+                """
+                UPDATE asset_recommendations
+                SET recommendation_timestamp = CURRENT_TIMESTAMP
+                WHERE recommendation_timestamp IS NULL
+                """
+            )
+        )
