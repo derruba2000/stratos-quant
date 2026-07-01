@@ -189,10 +189,13 @@ class DashboardController:
                         f"{run['llm_overall_rationale']}"
                     ),
                     (
-                        "No orders generated. Reconciliation is disabled because "
-                        "the reconstructed cash balance is negative; add the "
-                        "missing deposit/opening-balance transactions or model the "
-                        "borrowing semantics before generating executable orders."
+                        "No orders generated because reconciliation is blocked by "
+                        "ledger quality. The reconstructed cash balance is negative, "
+                        "indicating missing **initial funding transactions**. "
+                        "To enable rebalancing: Add a DEPOSIT transaction that records "
+                        "the original account funding (this does not re-count your holdings, "
+                        "which are already recorded). Alternatively, if you used margin "
+                        "borrowing, model that separately."
                     ),
                     pd.DataFrame(columns=TRADE_COLUMNS),
                     run_id,
@@ -293,7 +296,10 @@ class DashboardController:
             [
                 {
                     "Asset Class": code,
-                    "Value": _display_number(value),
+                    # Market value cannot be negative; negative cash is a ledger
+                    # artefact (missing deposits).  Floor at 0 for display so the
+                    # weight maths and the visible figure stay consistent.
+                    "Value": _display_number(max(value, Decimal("0"))),
                     "Weight": (
                         _display_number(value / positive_total)
                         if value > 0 and positive_total > 0
@@ -400,13 +406,13 @@ class DashboardController:
         if valuation.cash_balance >= 0:
             return None
         return (
-            f"Reconstructed cash is **{valuation.cash_balance:,.2f} "
-            f"{valuation.currency}**. The ledger does not contain enough funding "
-            "transactions to support the recorded purchases, or it represents "
-            "margin borrowing. Allocation weights below are normalized across "
-            "positive asset values only. Trade reconciliation is disabled until "
-            "the missing deposits/opening balance or borrowing semantics are "
-            "recorded correctly."
+            f"**Ledger quality issue:** Reconstructed cash is **{valuation.cash_balance:,.2f} "
+            f"{valuation.currency}** (negative). The transaction ledger lacks the initial "
+            "funding transactions that opened this account. Your holdings are already recorded; "
+            "you just need to add the **DEPOSIT transactions** that show where the original "
+            "capital came from. Alternatively, if borrowing was used, model that separately. "
+            "Allocation weights below are normalized across positive asset values only. "
+            "Trade reconciliation is disabled until the ledger is corrected."
         )
 
     @staticmethod

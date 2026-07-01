@@ -321,7 +321,7 @@ def _render_signals(model_name: str, allocation: AllocationResult) -> str:
                 [
                     {
                         "Asset Class": code,
-                        "Weight": format(weight, ".10f"),
+                        "Weight": format(weight, ".2f"),
                     }
                     for code, weight in sorted(allocation.weights.items())
                 ]
@@ -355,7 +355,7 @@ def _render_signals(model_name: str, allocation: AllocationResult) -> str:
             {
                 "Component": component,
                 "Asset Class": asset_class_code,
-                "Weight": format(weight, ".10f"),
+                "Weight": format(weight, ".2f"),
             }
             for component, weights in allocation.component_weights.items()
             for asset_class_code, weight in sorted(weights.items())
@@ -391,8 +391,10 @@ def _render_report(
         f"- Run ID: `{run_id if run_id is not None else 'not created'}`",
         f"- Run status: {status}",
         "",
-        "## Current Assets",
-        _dataframe_to_markdown(current),
+        f"## Current Assets (values in {portfolio.currency_code})",
+        _dataframe_to_markdown(
+            current.rename(columns={"Value": f"Value ({portfolio.currency_code})"})
+        ),
         "",
         "## Target Allocation And Drift",
         _dataframe_to_markdown(target),
@@ -407,7 +409,7 @@ def _render_report(
                     [
                         {
                             "Asset Class": code,
-                            "Weight": format(weight, ".10f"),
+                            "Weight": format(weight, ".2f"),
                         }
                         for code, weight in sorted(allocation.weights.items())
                     ]
