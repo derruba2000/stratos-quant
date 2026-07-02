@@ -599,22 +599,67 @@ def security_statistics(
     """Calculate trend, momentum, and annualized volatility per security."""
     rows: list[dict[str, object]] = []
     required = max(long_window, momentum_window + 1, volatility_window + 1)
+    benchmark_returns = _equal_weight_benchmark_returns(prices)
     for (security_id, ticker, asset_class), group in prices.groupby(
         ["security_id", "ticker", "asset_class_code"],
         sort=True,
     ):
-        closes = (
-            group.sort_values("date")
-            .drop_duplicates("date", keep="last")["close"]
-            .astype(float)
-        )
+        sorted_group = group.sort_values("date").drop_duplicates("date", keep="last")
+        closes = sorted_group.set_index(pd.to_datetime(sorted_group["date"]))[
+            "close"
+        ].astype(float)
         if len(closes) < required:
             continue
         close_values = closes.to_numpy(dtype=np.float64)
         daily_returns = returnv(close_values)[-volatility_window:]
         recent_returns = daily_returns[np.isfinite(daily_returns)]
         volatility = float(np.std(recent_returns, ddof=1) * np.sqrt(TRADING_DAYS))
+        annualized_return = (
+            float(np.mean(recent_returns) * TRADING_DAYS)
+            if len(recent_returns) > 0
+            else None
+        )
+        sharpe_ratio = (
+            annualized_return / volatility
+            if annualized_return is not None and volatility > 0
+            else None
+        )
+        full_returns = closes.pct_change().dropna()
+        downside_returns = full_returns[full_returns < 0]
+        downside_volatility = (
+            float(downside_returns.std(ddof=1) * np.sqrt(TRADING_DAYS))
+            if len(downside_returns) > 1
+            else None
+        )
+        full_annualized_return = (
+            float(full_returns.mean() * TRADING_DAYS)
+            if not full_returns.empty
+            else None
+        )
+        sortino_ratio = (
+            full_annualized_return / downside_volatility
+            if full_annualized_return is not None
+            and downside_volatility is not None
+            and downside_volatility > 0
+            else None
+        )
+        beta, alpha = _beta_alpha(
+            full_returns,
+            benchmark_returns,
+            full_annualized_return,
+        )
+        treynor_ratio = (
+            full_annualized_return / beta
+            if full_annualized_return is not None
+            and beta is not None
+            and beta != 0
+            else None
+        )
         momentum = float(returnv(close_values, momentum_window)[-1])
+        time_weighted_return = float(closes.iloc[-1] / closes.iloc[0] - 1.0)
+        cagr = _cagr(closes)
+        max_drawdown = _max_drawdown(closes)
+        macd = _macd(closes)
         rows.append(
             {
                 "security_id": int(security_id),
@@ -625,7 +670,19 @@ def security_statistics(
                     > closes.tail(long_window).mean()
                 ),
                 "momentum_12m": momentum,
+                "momentum_24m": _period_return(closes, MOMENTUM_WINDOWS["24m"]),
+                "momentum_36m": _period_return(closes, MOMENTUM_WINDOWS["36m"]),
                 "annualized_volatility": volatility,
+                "sharpe_ratio": sharpe_ratio,
+                "max_drawdown": max_drawdown,
+                "beta_vs_benchmark": beta,
+                "alpha": alpha,
+                "macd": macd,
+                "time_weighted_return": time_weighted_return,
+                "cagr": cagr,
+                "sortino_ratio": sortino_ratio,
+                "treynor_ratio": treynor_ratio,
+                "yield_": None,
             }
         )
     return pd.DataFrame(rows)
@@ -646,6 +703,18 @@ def aggregate_asset_class_signals(statistics: pd.DataFrame) -> tuple[AssetClassS
                     group["annualized_volatility"].replace([np.inf, -np.inf], np.nan).mean()
                 ),
                 security_count=len(group),
+                momentum_24m=_nullable_mean(group["momentum_24m"]),
+                momentum_36m=_nullable_mean(group["momentum_36m"]),
+                sharpe_ratio=_nullable_mean(group["sharpe_ratio"]),
+                max_drawdown=_nullable_mean(group["max_drawdown"]),
+                beta_vs_benchmark=_nullable_mean(group["beta_vs_benchmark"]),
+                alpha=_nullable_mean(group["alpha"]),
+                macd=_nullable_mean(group["macd"]),
+                time_weighted_return=_nullable_mean(group["time_weighted_return"]),
+                cagr=_nullable_mean(group["cagr"]),
+                sortino_ratio=_nullable_mean(group["sortino_ratio"]),
+                treynor_ratio=_nullable_mean(group["treynor_ratio"]),
+                yield_=_nullable_mean(group["yield_"]),
             )
         )
     return tuple(signals)
@@ -668,6 +737,99 @@ def security_signals_from_statistics(
             trend_positive=bool(row.trend_positive),
             momentum_12m=float(row.momentum_12m),
             annualized_volatility=float(row.annualized_volatility),
+            momentum_24m=(
+                None
+                if pd.isna(row.momentum_24m)
+                else float(row.momentum_24m)
+            ),
+            momentum_36m=(
+                None
+                if pd.isna(row.momentum_36m)
+                else float(row.momentum_36m)
+            ),
+            sharpe_ratio=(
+                None
+                if pd.isna(row.sharpe_ratio)
+                else float(row.sharpe_ratio)
+            ),
+            max_drawdown=_nullable_row_float(row.max_drawdown),
+            beta_vs_benchmark=_nullable_row_float(row.beta_vs_benchmark),
+            alpha=_nullable_row_float(row.alpha),
+            macd=_nullable_row_float(row.macd),
+            time_weighted_return=_nullable_row_float(row.time_weighted_return),
+            cagr=_nullable_row_float(row.cagr),
+            sortino_ratio=_nullable_row_float(row.sortino_ratio),
+            treynor_ratio=_nullable_row_float(row.treynor_ratio),
+            yield_=_nullable_row_float(row.yield_),
         )
         for row in statistics.itertuples(index=False)
     )
+
+
+def _nullable_mean(values: pd.Series) -> float | None:
+    clean = values.replace([np.inf, -np.inf], np.nan).dropna()
+    if clean.empty:
+        return None
+    return float(clean.mean())
+
+
+def _nullable_row_float(value: object) -> float | None:
+    return None if pd.isna(value) else float(value)
+
+
+def _equal_weight_benchmark_returns(prices: pd.DataFrame) -> pd.Series:
+    clean = prices.copy()
+    clean["date"] = pd.to_datetime(clean["date"])
+    pivot = clean.pivot_table(
+        index="date",
+        columns="ticker",
+        values="close",
+        aggfunc="last",
+    ).sort_index()
+    return pivot.pct_change().mean(axis=1).dropna()
+
+
+def _beta_alpha(
+    returns: pd.Series,
+    benchmark_returns: pd.Series,
+    annualized_return: float | None,
+) -> tuple[float | None, float | None]:
+    aligned_returns, aligned_benchmark = returns.align(
+        benchmark_returns,
+        join="inner",
+    )
+    if len(aligned_returns) < 2:
+        return None, None
+    benchmark_variance = aligned_benchmark.var(ddof=1)
+    if benchmark_variance == 0 or pd.isna(benchmark_variance):
+        return None, None
+    covariance = aligned_returns.cov(aligned_benchmark)
+    beta = float(covariance / benchmark_variance)
+    benchmark_annualized_return = float(aligned_benchmark.mean() * TRADING_DAYS)
+    alpha = (
+        annualized_return - beta * benchmark_annualized_return
+        if annualized_return is not None
+        else None
+    )
+    return beta, alpha
+
+
+def _max_drawdown(closes: pd.Series) -> float:
+    drawdown = closes / closes.cummax() - 1.0
+    return float(drawdown.min()) if not drawdown.empty else 0.0
+
+
+def _cagr(closes: pd.Series) -> float | None:
+    days = (closes.index[-1] - closes.index[0]).days
+    if days <= 0 or closes.iloc[0] <= 0:
+        return None
+    years = days / 365.25
+    return float((closes.iloc[-1] / closes.iloc[0]) ** (1 / years) - 1.0)
+
+
+def _macd(closes: pd.Series) -> float | None:
+    if len(closes) < 26:
+        return None
+    ema12 = closes.ewm(span=12, adjust=False).mean()
+    ema26 = closes.ewm(span=26, adjust=False).mean()
+    return float(ema12.iloc[-1] - ema26.iloc[-1])

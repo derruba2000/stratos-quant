@@ -44,6 +44,9 @@ trade values.
 | `config` | Load and validate runtime environment | `load_settings`, `AppConfig` |
 | `db` | Create SQLAlchemy engines and strategy tables | `create_sqlite_engine`, `ensure_strategy_schema` |
 | `data` | Reconstruct portfolio state and extract Yahoo KPIs | `PortfolioValuationService`, `FundDataExtractor` |
+| `backtest` | Execute single/multi-asset backtesting scenarios | `BacktestEngine` |
+| `performance` | Calculate and persist historical performance metrics | `PerformanceRepository`, `KPIEngine` |
+| `ranking` | Rank strategies and assets by goal violation | `RankingService` |
 | `strategy` | Calculate deterministic target allocations | `HierarchicalAllocationEngine`, `EnsembleAllocationEngine` |
 | `llm` | Call Ollama, validate output, and persist advisory state | `OllamaClient`, `AdvisoryPipeline`, `StrategyRepository` |
 | `reconciliation` | Convert allocation drift into security trade mandates | `ReconciliationService` |
@@ -63,6 +66,9 @@ DashboardController
 ├── PriceHistoryLoader
 │   ├── HierarchicalAllocationEngine
 │   └── EnsembleAllocationEngine
+├── BacktestEngine
+├── PerformanceRepository
+├── RankingService
 ├── StrategyRepository
 ├── OllamaClient
 │   └── AdvisoryPipeline

@@ -43,13 +43,37 @@ class AssetClassSignal:
     momentum_12m: float | None
     annualized_volatility: float | None
     security_count: int
+    momentum_24m: float | None = None
+    momentum_36m: float | None = None
+    sharpe_ratio: float | None = None
+    max_drawdown: float | None = None
+    beta_vs_benchmark: float | None = None
+    alpha: float | None = None
+    macd: float | None = None
+    time_weighted_return: float | None = None
+    cagr: float | None = None
+    sortino_ratio: float | None = None
+    treynor_ratio: float | None = None
+    yield_: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "asset_class_code": self.asset_class_code,
             "trend_positive": self.trend_positive,
             "momentum_12m": self.momentum_12m,
+            "momentum_24m": self.momentum_24m,
+            "momentum_36m": self.momentum_36m,
             "annualized_volatility": self.annualized_volatility,
+            "sharpe_ratio": self.sharpe_ratio,
+            "max_drawdown": self.max_drawdown,
+            "beta_vs_benchmark": self.beta_vs_benchmark,
+            "alpha": self.alpha,
+            "macd": self.macd,
+            "time_weighted_return": self.time_weighted_return,
+            "cagr": self.cagr,
+            "sortino_ratio": self.sortino_ratio,
+            "treynor_ratio": self.treynor_ratio,
+            "yield": self.yield_,
             "security_count": self.security_count,
         }
 
@@ -62,6 +86,18 @@ class SecuritySignal:
     trend_positive: bool
     momentum_12m: float
     annualized_volatility: float
+    momentum_24m: float | None = None
+    momentum_36m: float | None = None
+    sharpe_ratio: float | None = None
+    max_drawdown: float | None = None
+    beta_vs_benchmark: float | None = None
+    alpha: float | None = None
+    macd: float | None = None
+    time_weighted_return: float | None = None
+    cagr: float | None = None
+    sortino_ratio: float | None = None
+    treynor_ratio: float | None = None
+    yield_: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -70,7 +106,19 @@ class SecuritySignal:
             "asset_class_code": self.asset_class_code,
             "trend_positive": self.trend_positive,
             "momentum_12m": self.momentum_12m,
+            "momentum_24m": self.momentum_24m,
+            "momentum_36m": self.momentum_36m,
             "annualized_volatility": self.annualized_volatility,
+            "sharpe_ratio": self.sharpe_ratio,
+            "max_drawdown": self.max_drawdown,
+            "beta_vs_benchmark": self.beta_vs_benchmark,
+            "alpha": self.alpha,
+            "macd": self.macd,
+            "time_weighted_return": self.time_weighted_return,
+            "cagr": self.cagr,
+            "sortino_ratio": self.sortino_ratio,
+            "treynor_ratio": self.treynor_ratio,
+            "yield": self.yield_,
         }
 
 

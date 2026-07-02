@@ -17,8 +17,8 @@ from stratos_quant.strategy import (
 from stratos_quant.strategy.models import ONE
 
 
-def _strategy_prices(*, bearish: bool = False) -> pd.DataFrame:
-    dates = pd.bdate_range("2024-01-01", periods=300)
+def _strategy_prices(*, bearish: bool = False, periods: int = 300) -> pd.DataFrame:
+    dates = pd.bdate_range("2024-01-01", periods=periods)
     index = np.arange(len(dates), dtype=float)
     if bearish:
         series = {
@@ -62,6 +62,37 @@ def test_hierarchical_selects_momentum_winner_and_scales_volatility():
     assert signals["EQUITY"].trend_positive
     assert signals["EQUITY"].momentum_12m > signals["BOND"].momentum_12m
     assert not signals["COMMODITY"].trend_positive
+
+
+def test_strategy_security_kpis_include_36m_momentum_and_sharpe_ratio():
+    result = HierarchicalAllocationEngine().allocate(_strategy_prices(periods=820))
+
+    signal = next(item for item in result.security_signals if item.ticker == "EQUITY")
+
+    assert signal.momentum_24m is not None
+    assert signal.momentum_36m is not None
+    assert signal.sharpe_ratio is not None
+    assert signal.max_drawdown is not None
+    assert signal.beta_vs_benchmark is not None
+    assert signal.alpha is not None
+    assert signal.macd is not None
+    assert signal.time_weighted_return is not None
+    assert signal.cagr is not None
+    assert signal.sortino_ratio is not None
+    assert signal.treynor_ratio is not None
+    assert signal.yield_ is None
+    serialized = signal.to_dict()
+    assert "momentum_36m" in serialized
+    assert "sharpe_ratio" in serialized
+    assert "max_drawdown" in serialized
+    assert "beta_vs_benchmark" in serialized
+    assert "alpha" in serialized
+    assert "macd" in serialized
+    assert "time_weighted_return" in serialized
+    assert "cagr" in serialized
+    assert "sortino_ratio" in serialized
+    assert "treynor_ratio" in serialized
+    assert "yield" in serialized
 
 
 def test_hierarchical_falls_back_to_cash_when_no_absolute_momentum():

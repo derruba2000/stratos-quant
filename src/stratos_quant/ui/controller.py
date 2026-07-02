@@ -27,7 +27,19 @@ STRATEGY_KPI_COLUMNS = [
     "Asset Class",
     "Trend Positive",
     "12M Momentum",
+    "24M Momentum",
+    "36M Momentum",
     "Annualized Volatility",
+    "Sharpe Ratio",
+    "Max Drawdown",
+    "Beta vs Bench",
+    "Alpha",
+    "MACD",
+    "TWR",
+    "CAGR",
+    "Sortino Ratio",
+    "Treynor Ratio",
+    "Yield",
     "Security Count",
 ]
 COMPONENT_COLUMNS = ["Component", "Asset Class", "Weight"]
@@ -53,6 +65,58 @@ def _display_number(value: float | Decimal | int | None) -> float | None:
     if value is None:
         return None
     return round(float(value), DISPLAY_PRECISION)
+
+
+def _strategy_kpi_row(
+    *,
+    ticker: str,
+    asset_class: str,
+    trend_positive: bool,
+    signal,
+    security_count: int,
+) -> dict[str, object]:
+    return {
+        "Ticker": ticker,
+        "Asset Class": asset_class,
+        "Trend Positive": trend_positive,
+        "12M Momentum": _display_number(signal.momentum_12m),
+        "24M Momentum": _display_number(signal.momentum_24m),
+        "36M Momentum": _display_number(signal.momentum_36m),
+        "Annualized Volatility": _display_number(signal.annualized_volatility),
+        "Sharpe Ratio": _display_number(signal.sharpe_ratio),
+        "Max Drawdown": _display_number(signal.max_drawdown),
+        "Beta vs Bench": _display_number(signal.beta_vs_benchmark),
+        "Alpha": _display_number(signal.alpha),
+        "MACD": _display_number(signal.macd),
+        "TWR": _display_number(signal.time_weighted_return),
+        "CAGR": _display_number(signal.cagr),
+        "Sortino Ratio": _display_number(signal.sortino_ratio),
+        "Treynor Ratio": _display_number(signal.treynor_ratio),
+        "Yield": _display_number(signal.yield_),
+        "Security Count": security_count,
+    }
+
+
+def _portfolio_kpi_row(rows: list[dict[str, object]]) -> dict[str, object]:
+    numeric_columns = [
+        column
+        for column in STRATEGY_KPI_COLUMNS
+        if column not in {"Ticker", "Asset Class", "Trend Positive", "Security Count"}
+    ]
+    row: dict[str, object] = {
+        "Ticker": "Portfolio",
+        "Asset Class": "Portfolio",
+        "Trend Positive": all(bool(item["Trend Positive"]) for item in rows),
+        "Security Count": sum(int(item["Security Count"]) for item in rows),
+    }
+    for column in numeric_columns:
+        values = [
+            float(item[column])
+            for item in rows
+            if item.get(column) is not None
+        ]
+        row[column] = round(sum(values) / len(values), DISPLAY_PRECISION) if values else None
+    return row
 
 
 class DashboardController:
@@ -355,38 +419,30 @@ class DashboardController:
     @staticmethod
     def _strategy_kpi_frame(allocation) -> pd.DataFrame:
         if allocation.security_signals:
-            return pd.DataFrame(
-                [
-                    {
-                        "Ticker": signal.ticker,
-                        "Asset Class": signal.asset_class_code,
-                        "Trend Positive": signal.trend_positive,
-                        "12M Momentum": _display_number(signal.momentum_12m),
-                        "Annualized Volatility": _display_number(
-                            signal.annualized_volatility
-                        ),
-                        "Security Count": 1,
-                    }
-                    for signal in allocation.security_signals
-                ],
-                columns=STRATEGY_KPI_COLUMNS,
-            )
-        return pd.DataFrame(
-            [
-                {
-                    "Ticker": "Class aggregate",
-                    "Asset Class": signal.asset_class_code,
-                    "Trend Positive": signal.trend_positive,
-                    "12M Momentum": _display_number(signal.momentum_12m),
-                    "Annualized Volatility": _display_number(
-                        signal.annualized_volatility
-                    ),
-                    "Security Count": signal.security_count,
-                }
+            rows = [
+                _strategy_kpi_row(
+                    ticker=signal.ticker,
+                    asset_class=signal.asset_class_code,
+                    trend_positive=signal.trend_positive,
+                    signal=signal,
+                    security_count=1,
+                )
+                for signal in allocation.security_signals
+            ]
+        else:
+            rows = [
+                _strategy_kpi_row(
+                    ticker="Class aggregate",
+                    asset_class=signal.asset_class_code,
+                    trend_positive=signal.trend_positive,
+                    signal=signal,
+                    security_count=signal.security_count,
+                )
                 for signal in allocation.signals
-            ],
-            columns=STRATEGY_KPI_COLUMNS,
-        )
+            ]
+        if rows:
+            rows.insert(0, _portfolio_kpi_row(rows))
+        return pd.DataFrame(rows, columns=STRATEGY_KPI_COLUMNS)
 
     @staticmethod
     def _component_frame(allocation) -> pd.DataFrame:

@@ -711,18 +711,29 @@ class. To change what Ollama can select, update the underlying securities,
 asset-class codes, and fund data. The model cannot select securities outside the
 candidate context.
 
-## 15. Operational checklist
+## 16. Research and optimization workflows
 
-Before relying on a run, check:
+These workflows are used for offline evaluation and performance monitoring rather than real-time dashboard analysis.
 
-- `securities.asset_class` is populated with the intended strategy classes.
-- Each strategy security has enough price history for the configured windows.
-- `price_history.close` values are positive and current enough for the run.
-- FX rates exist for every holding currency to the portfolio currency.
-- The transaction ledger includes deposits, withdrawals, fees, and opening
-  balances.
-- Ollama is running and the configured model is available.
-- Candidate fund data exists for each positive non-cash target class.
-- Generated recommendations have plausible tickers, target weights, and trade
-  values before any external trade is placed.
+### 16.1 Backtesting workflow
+
+The `BacktestEngine` allows testing strategy logic against historical price data without reconstructing full portfolio transaction ledgers.
+
+```text
+1. Define a set of securities and their asset classes.
+2. Load historical prices for the target period.
+3. Execute simulation with specific allocation engine (Hierarchical/Ensemble).
+4. Calculate equity curves, drawdowns, and risk-adjusted returns.
+5. Output results as a performance report or persist to SQLite.
+```
+
+### 16.2 Performance and ranking workflow
+
+This workflow ensures that the strategy's historical behavior is measured and compared against goals.
+
+1. **KPI Calculation**: The `KPIEngine` processes historical `strategy_runs` and compares them against `price_history` and `asset_recommendations`. It calculates metrics like Sharpe ratio, max drawdown, and tracking error.
+2. **Goal-based Ranking**: The `RankingService` ranks strategies by how well they adhered to target allocations or achieved performance goals. 
+3. **Asset Selection Optimization**: Using the ranking results, users can identify which asset classes or specific securities are consistently driving alpha or contributing most to volatility.
+
+These metrics and rankings are persisted in SQLite, enabling longitudinal analysis of strategy evolution over time.
 
