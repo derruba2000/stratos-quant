@@ -40,7 +40,7 @@ class AppConfig:
 
 def load_settings(env_file: str | Path = ".env") -> AppConfig:
     """Load and validate runtime settings from environment variables."""
-    load_dotenv(dotenv_path=env_file, override=False)
+    load_dotenv(dotenv_path=env_file, override=True)
 
     sqlite_db_path = (os.getenv("SQLITE_DB_PATH") or "").strip()
     api_usage = (os.getenv("API_USAGE") or "ollama").strip().upper()

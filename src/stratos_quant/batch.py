@@ -176,18 +176,22 @@ class StrategyBatchRunner:
         )
 
         # ── Step 1: compute signals once per model ────────────────────────────
-        allocations: dict[str, AllocationResult] = {}
+        allocations: dict[str, AllocationResult | None] = {}
+        can_precompute = hasattr(self.controller, "engines")
         for model_name in models:
             if model_name not in ALLOCATION_MODELS:
                 raise ValueError(
                     f"model must be one of: {', '.join(ALLOCATION_MODELS)}"
                 )
+            if not can_precompute:
+                allocations[model_name] = None
+                continue
             _progress(
                 f"[batch] Computing market signals for model '{model_name}' ..."
             )
             engine = self.controller.engines[model_name]
             allocation = engine.run(
-                asset_class_map=self.controller.asset_class_map
+                asset_class_map=getattr(self.controller, "asset_class_map", {})
             )
             allocations[model_name] = allocation
 
@@ -205,7 +209,9 @@ class StrategyBatchRunner:
             )
 
         # ── Step 2: dispatch portfolio × model tasks to worker pool ──────────
-        work_items: list[tuple[PortfolioBatchTarget, str, AllocationResult]] = [
+        work_items: list[
+            tuple[PortfolioBatchTarget, str, AllocationResult | None]
+        ] = [
             (portfolio, model_name, allocations[model_name])
             for portfolio in portfolios
             for model_name in models
@@ -215,7 +221,7 @@ class StrategyBatchRunner:
         lock = threading.Lock()
 
         def _run_work_item(
-            item: tuple[PortfolioBatchTarget, str, AllocationResult],
+            item: tuple[PortfolioBatchTarget, str, AllocationResult | None],
         ) -> None:
             portfolio, model_name, allocation = item
             report = self._run_one(
@@ -251,21 +257,34 @@ class StrategyBatchRunner:
             f"(ID={portfolio.portfolio_id})]"
         )
         _progress(f"{label} → Starting {model_name} analysis ...")
-        (
-            current,
-            target,
-            kpis,
-            components,
-            rationale,
-            orders_note,
-            trades,
-            run_id,
-            status,
-        ) = self.controller.run_analysis(
-            portfolio.portfolio_id,
-            model_name,
-            precomputed_allocation=precomputed_allocation,
-        )
+        if precomputed_allocation is None:
+            (
+                current,
+                target,
+                kpis,
+                components,
+                rationale,
+                orders_note,
+                trades,
+                run_id,
+                status,
+            ) = self.controller.run_analysis(portfolio.portfolio_id, model_name)
+        else:
+            (
+                current,
+                target,
+                kpis,
+                components,
+                rationale,
+                orders_note,
+                trades,
+                run_id,
+                status,
+            ) = self.controller.run_analysis(
+                portfolio.portfolio_id,
+                model_name,
+                precomputed_allocation=precomputed_allocation,
+            )
         _progress(
             f"{label} → Done (run_id={run_id}, status={status!r})"
         )

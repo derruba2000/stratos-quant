@@ -189,8 +189,9 @@ class DashboardController:
                         f"{run['llm_overall_rationale']}"
                     ),
                     (
-                        "No orders generated because reconciliation is blocked by "
-                        "ledger quality. The reconstructed cash balance is negative, "
+                        "No orders generated. Reconciliation is disabled because "
+                        "ledger quality is blocking trade generation. The "
+                        "reconstructed cash balance is negative, "
                         "indicating missing **initial funding transactions**. "
                         "To enable rebalancing: Add a DEPOSIT transaction that records "
                         "the original account funding (this does not re-count your holdings, "

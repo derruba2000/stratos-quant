@@ -7,3 +7,7 @@ class StrategyError(RuntimeError):
 
 class InsufficientPriceHistoryError(StrategyError):
     """Raised when no security has enough observations for an allocation."""
+
+
+class AllocationConstraintError(StrategyError):
+    """Raised when allocation constraints cannot be satisfied."""

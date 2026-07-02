@@ -62,6 +62,59 @@ EPIC4_SCHEMA = (
         FOREIGN KEY(security_id) REFERENCES securities (id)
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS rebalance_runs (
+        id INTEGER NOT NULL PRIMARY KEY,
+        strategy_run_id INTEGER NOT NULL,
+        portfolio_id INTEGER NOT NULL,
+        run_timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        schedule VARCHAR(16) NOT NULL,
+        trigger_reasons TEXT NOT NULL,
+        portfolio_value DECIMAL(32, 10) NOT NULL,
+        portfolio_drift DECIMAL(32, 10) NOT NULL,
+        rebalance_required BOOLEAN NOT NULL,
+        expected_benefit DECIMAL(32, 10) NOT NULL,
+        estimated_fees DECIMAL(32, 10) NOT NULL,
+        estimated_slippage DECIMAL(32, 10) NOT NULL,
+        estimated_tax_cost DECIMAL(32, 10) NOT NULL,
+        net_expected_benefit DECIMAL(32, 10) NOT NULL,
+        explanation TEXT NOT NULL,
+        FOREIGN KEY(strategy_run_id) REFERENCES strategy_runs (id),
+        FOREIGN KEY(portfolio_id) REFERENCES portfolios (id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS rebalance_trade_proposals (
+        id INTEGER NOT NULL PRIMARY KEY,
+        rebalance_run_id INTEGER NOT NULL,
+        strategy_run_id INTEGER NOT NULL,
+        portfolio_id INTEGER NOT NULL,
+        security_id INTEGER NOT NULL,
+        ticker TEXT NOT NULL,
+        asset_class_code VARCHAR(32) NOT NULL,
+        side VARCHAR(10) NOT NULL,
+        current_weight DECIMAL(32, 10),
+        target_weight DECIMAL(32, 10) NOT NULL,
+        allowed_min DECIMAL(32, 10),
+        allowed_max DECIMAL(32, 10),
+        rebalance_weight DECIMAL(32, 10),
+        current_value DECIMAL(32, 10),
+        target_value DECIMAL(32, 10),
+        trade_value DECIMAL(32, 10) NOT NULL,
+        estimated_quantity DECIMAL(32, 10),
+        estimated_fees DECIMAL(32, 10) NOT NULL,
+        estimated_slippage DECIMAL(32, 10) NOT NULL,
+        estimated_tax_cost DECIMAL(32, 10) NOT NULL,
+        expected_benefit DECIMAL(32, 10) NOT NULL,
+        net_expected_benefit DECIMAL(32, 10) NOT NULL,
+        skipped_reason TEXT,
+        rationale TEXT NOT NULL,
+        FOREIGN KEY(rebalance_run_id) REFERENCES rebalance_runs (id),
+        FOREIGN KEY(strategy_run_id) REFERENCES strategy_runs (id),
+        FOREIGN KEY(portfolio_id) REFERENCES portfolios (id),
+        FOREIGN KEY(security_id) REFERENCES securities (id)
+    )
+    """,
 )
 
 SCHEMA_UPGRADES = {
