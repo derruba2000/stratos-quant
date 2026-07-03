@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from decimal import Decimal
 from typing import Any, Collection
 
@@ -17,6 +18,8 @@ from .prompts import (
     screening_prompt,
 )
 from .repository import StrategyRepository
+
+RECOMMENDATION_WEIGHT_TOLERANCE = Decimal("0.001")
 
 
 class AdvisoryPipeline:
@@ -94,14 +97,10 @@ class AdvisoryPipeline:
                     f"Recommendation is not in candidate context: "
                     f"{recommendation.ticker}"
                 )
-        total_weight = sum(
-            (recommendation.target_weight for recommendation in recommendations),
-            Decimal("0"),
+        recommendations = _normalize_recommendation_weights(
+            recommendations,
+            target_weight,
         )
-        if total_weight != target_weight:
-            raise OllamaResponseError(
-                "Recommendation target weights do not equal the asset-class target"
-            )
 
         self.repository.save_recommendations(
             run_id=run_id,
@@ -136,3 +135,39 @@ class AdvisoryPipeline:
             candidate_context=context,
             held_security_ids=held_security_ids,
         )
+
+
+def _normalize_recommendation_weights(
+    recommendations: tuple[SecurityRecommendation, ...],
+    target_weight: Decimal,
+) -> tuple[SecurityRecommendation, ...]:
+    total_weight = sum(
+        (recommendation.target_weight for recommendation in recommendations),
+        Decimal("0"),
+    )
+    residual = target_weight - total_weight
+    if residual == 0:
+        return recommendations
+    if abs(residual) > RECOMMENDATION_WEIGHT_TOLERANCE:
+        raise OllamaResponseError(
+            "Recommendation target weights do not equal the asset-class target "
+            f"(sum={total_weight}, target={target_weight})"
+        )
+
+    adjustable_index = max(
+        range(len(recommendations)),
+        key=lambda index: recommendations[index].target_weight,
+    )
+    adjusted_weight = recommendations[adjustable_index].target_weight + residual
+    if adjusted_weight < Decimal("0"):
+        raise OllamaResponseError(
+            "Recommendation target weights do not equal the asset-class target "
+            f"(sum={total_weight}, target={target_weight})"
+        )
+
+    adjusted = list(recommendations)
+    adjusted[adjustable_index] = replace(
+        adjusted[adjustable_index],
+        target_weight=adjusted_weight,
+    )
+    return tuple(adjusted)

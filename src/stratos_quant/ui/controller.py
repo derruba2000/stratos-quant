@@ -54,6 +54,7 @@ TRADE_COLUMNS = [
     "Executed",
 ]
 DISPLAY_PRECISION = 2
+KPI_DISPLAY_PRECISION = 3
 ORDERS_READY_MESSAGE = (
     "Run an analysis to generate rebalancing orders. If no orders are shown, "
     "the reason will appear here."
@@ -65,6 +66,12 @@ def _display_number(value: float | Decimal | int | None) -> float | None:
     if value is None:
         return None
     return round(float(value), DISPLAY_PRECISION)
+
+
+def _display_kpi_number(value: float | Decimal | int | None) -> float | None:
+    if value is None:
+        return None
+    return round(float(value), KPI_DISPLAY_PRECISION)
 
 
 def _strategy_kpi_row(
@@ -79,20 +86,20 @@ def _strategy_kpi_row(
         "Ticker": ticker,
         "Asset Class": asset_class,
         "Trend Positive": trend_positive,
-        "12M Momentum": _display_number(signal.momentum_12m),
-        "24M Momentum": _display_number(signal.momentum_24m),
-        "36M Momentum": _display_number(signal.momentum_36m),
-        "Annualized Volatility": _display_number(signal.annualized_volatility),
-        "Sharpe Ratio": _display_number(signal.sharpe_ratio),
-        "Max Drawdown": _display_number(signal.max_drawdown),
-        "Beta vs Bench": _display_number(signal.beta_vs_benchmark),
-        "Alpha": _display_number(signal.alpha),
-        "MACD": _display_number(signal.macd),
-        "TWR": _display_number(signal.time_weighted_return),
-        "CAGR": _display_number(signal.cagr),
-        "Sortino Ratio": _display_number(signal.sortino_ratio),
-        "Treynor Ratio": _display_number(signal.treynor_ratio),
-        "Yield": _display_number(signal.yield_),
+        "12M Momentum": _display_kpi_number(signal.momentum_12m),
+        "24M Momentum": _display_kpi_number(signal.momentum_24m),
+        "36M Momentum": _display_kpi_number(signal.momentum_36m),
+        "Annualized Volatility": _display_kpi_number(signal.annualized_volatility),
+        "Sharpe Ratio": _display_kpi_number(signal.sharpe_ratio),
+        "Max Drawdown": _display_kpi_number(signal.max_drawdown),
+        "Beta vs Bench": _display_kpi_number(signal.beta_vs_benchmark),
+        "Alpha": _display_kpi_number(signal.alpha),
+        "MACD": _display_kpi_number(signal.macd),
+        "TWR": _display_kpi_number(signal.time_weighted_return),
+        "CAGR": _display_kpi_number(signal.cagr),
+        "Sortino Ratio": _display_kpi_number(signal.sortino_ratio),
+        "Treynor Ratio": _display_kpi_number(signal.treynor_ratio),
+        "Yield": _display_kpi_number(signal.yield_),
         "Security Count": security_count,
     }
 
@@ -115,7 +122,11 @@ def _portfolio_kpi_row(rows: list[dict[str, object]]) -> dict[str, object]:
             for item in rows
             if item.get(column) is not None
         ]
-        row[column] = round(sum(values) / len(values), DISPLAY_PRECISION) if values else None
+        row[column] = (
+            round(sum(values) / len(values), KPI_DISPLAY_PRECISION)
+            if values
+            else None
+        )
     return row
 
 

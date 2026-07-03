@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 
 import pandas as pd
 from sqlalchemy import create_engine
@@ -9,7 +10,9 @@ from stratos_quant.batch import (
     PortfolioBatchTarget,
     StrategyBatchRunner,
     discover_active_portfolios,
+    _render_signals,
 )
+from stratos_quant.strategy import AllocationResult, AssetClassSignal
 
 
 class FixedClock:
@@ -159,8 +162,46 @@ def test_batch_runner_writes_markdown_report_for_each_model(tmp_path):
     assert "## Current Assets" in content
     assert "## Target Allocation And Drift" in content
     assert "## Strategy KPI Table" in content
+    assert "0.200" in content
+    assert "0.100" in content
     assert "## Ensemble Component Weights" in content
     assert "## LLM Strategy Rationale" in content
     assert "The strategy rationale." in content
     assert "## Generated Recommendations" in content
     assert "Low fee candidate." in content
+
+
+def test_signal_markdown_formats_kpi_metrics_to_three_decimals():
+    allocation = AllocationResult(
+        model="TEST",
+        as_of=datetime(2026, 7, 3).date(),
+        weights={"ETF": Decimal("1.0000000000")},
+        signals=(
+            AssetClassSignal(
+                asset_class_code="ETF",
+                trend_positive=True,
+                momentum_12m=0.123456,
+                annualized_volatility=0.987654,
+                security_count=1,
+                momentum_24m=0.234567,
+                momentum_36m=0.345678,
+                sharpe_ratio=1.234567,
+                max_drawdown=-0.111111,
+                beta_vs_benchmark=0.876543,
+                alpha=0.012345,
+                macd=4.56789,
+                time_weighted_return=0.456789,
+                cagr=0.156789,
+                sortino_ratio=2.345678,
+                treynor_ratio=0.067891,
+            ),
+        ),
+    )
+
+    content = _render_signals("TEST", allocation)
+
+    assert "0.123" in content
+    assert "0.988" in content
+    assert "1.235" in content
+    assert "0.123456" not in content
+    assert "0.987654" not in content

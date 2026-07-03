@@ -6,6 +6,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 import re
 from typing import Iterable, Sequence
@@ -27,6 +28,27 @@ ACCOUNT_MODES = ("all", "live", "test")
 PARALLEL_WORKERS_ENV = "PARALLEL_WORKERS"
 DEFAULT_PARALLEL_WORKERS = 4
 SIGNALS_DIR = "signals"
+THREE_DECIMAL_METRIC_COLUMNS = {
+    "12mmomentum",
+    "24mmomentum",
+    "36mmomentum",
+    "momentum12m",
+    "momentum24m",
+    "momentum36m",
+    "annualizedvolatility",
+    "sharperatio",
+    "maxdrawdown",
+    "betavsbench",
+    "betavsbenchmark",
+    "alpha",
+    "macd",
+    "twr",
+    "timeweightedreturn",
+    "cagr",
+    "sortinoratio",
+    "treynorratio",
+    "yield",
+}
 
 _PRINT_LOCK = threading.Lock()
 
@@ -470,8 +492,8 @@ def _dataframe_to_markdown(frame: pd.DataFrame) -> str:
     columns = [str(column) for column in frame.columns]
     rows = [
         [
-            _format_cell(value)
-            for value in row
+            _format_cell(value, column)
+            for column, value in zip(columns, row, strict=True)
         ]
         for row in frame.itertuples(index=False, name=None)
     ]
@@ -494,10 +516,17 @@ def _dataframe_to_markdown(frame: pd.DataFrame) -> str:
     return "\n".join([header, separator, *body])
 
 
-def _format_cell(value: object) -> str:
+def _format_cell(value: object, column: str) -> str:
     if pd.isna(value):
         return ""
+    if _is_three_decimal_metric(column) and isinstance(value, (int, float, Decimal)):
+        return f"{float(value):.3f}"
     return str(value).replace("\n", " ")
+
+
+def _is_three_decimal_metric(column: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "", column.lower())
+    return normalized in THREE_DECIMAL_METRIC_COLUMNS
 
 
 def run_strategy_batch(
