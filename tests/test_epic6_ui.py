@@ -63,8 +63,10 @@ class FakeStrategyEngine:
 class FakePipeline:
     def __init__(self):
         self.screened = []
+        self.rationalized_allocation = None
 
     def rationalize_allocation(self, *, portfolio_id, allocation):
+        self.rationalized_allocation = allocation
         return 42
 
     def screen_portfolio_asset_class(self, **kwargs):
@@ -77,7 +79,11 @@ class FailingPipeline(FakePipeline):
 
 
 class FakeReconciliation:
+    def __init__(self):
+        self.kwargs = None
+
     def reconcile(self, **kwargs):
+        self.kwargs = kwargs
         return ReconciliationResult(
             run_id=42,
             portfolio_id=7,
@@ -138,6 +144,7 @@ class FakeRepository:
 
 def _fake_controller():
     controller = object.__new__(DashboardController)
+    controller.engine = None
     controller.asset_class_map = {}
     controller.drift_threshold = Decimal("0.01")
     controller.valuation = FakeValuationService()
@@ -181,6 +188,60 @@ def test_dashboard_controller_runs_full_pipeline_and_formats_outputs():
     assert trades.loc[0, "Action"] == "BUY"
     assert trades.loc[0, "Trade Value"] == 200.0
     assert controller.pipeline.screened[0]["asset_class_code"] == "ETF"
+
+
+def test_dashboard_applies_portfolio_strategy_policy_targets(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'policy.sqlite3'}")
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE strategies (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE portfolio_strategies (
+                portfolio_id INTEGER NOT NULL,
+                strategy_id INTEGER NOT NULL,
+                allocation_weight NUMERIC(32, 10) NOT NULL,
+                drift_up_percent NUMERIC(32, 10) NOT NULL,
+                drift_down_percent NUMERIC(32, 10) NOT NULL
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO strategies VALUES (1, 'EQUITY'), (2, 'BOND')"
+        )
+        connection.exec_driver_sql(
+            """
+            INSERT INTO portfolio_strategies VALUES
+                (7, 1, 0.6, 5, 5),
+                (7, 2, 0.4, 5, 5)
+            """
+        )
+
+    controller = _fake_controller()
+    controller.engine = engine
+
+    controller.run_analysis(7, "Hierarchical")
+
+    assert controller.pipeline.rationalized_allocation.weights == {
+        "BOND": Decimal("0.4000000000"),
+        "EQUITY": Decimal("0.6000000000"),
+    }
+    assert [item["asset_class_code"] for item in controller.pipeline.screened] == [
+        "BOND",
+        "EQUITY",
+    ]
+    assert controller.reconciliation.kwargs["drift_bands"]["EQUITY"].min_drift == (
+        Decimal("-0.05")
+    )
+    assert controller.reconciliation.kwargs["drift_bands"]["BOND"].max_drift == (
+        Decimal("0.05")
+    )
 
 
 def test_dashboard_execution_checkbox_updates_database_state():

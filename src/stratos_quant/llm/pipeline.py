@@ -59,6 +59,7 @@ class AdvisoryPipeline:
         target_weight: Decimal,
         candidate_context: dict[str, Any],
         held_security_ids: Collection[int] = (),
+        portfolio_strategy_recommendation: str = "",
     ) -> tuple[SecurityRecommendation, ...]:
         response = self.client.chat_json(
             system_prompt=SCREENING_SYSTEM_PROMPT,
@@ -67,6 +68,7 @@ class AdvisoryPipeline:
                 target_weight=format(target_weight, ".10f"),
                 candidate_context=candidate_context,
                 held_security_ids=held_security_ids,
+                portfolio_strategy_recommendation=portfolio_strategy_recommendation,
             ),
             response_schema=RECOMMENDATION_SCHEMA,
         )
@@ -118,6 +120,7 @@ class AdvisoryPipeline:
         target_weight: Decimal,
         fund_data: FundDataExtractor,
         portfolio_data: PortfolioValuationService,
+        portfolio_strategy_recommendation: str = "",
     ) -> tuple[SecurityRecommendation, ...]:
         """Extract candidates and current holdings before asking Ollama to screen."""
         context = fund_data.extract_asset_class(asset_class_code)
@@ -134,6 +137,7 @@ class AdvisoryPipeline:
             target_weight=target_weight,
             candidate_context=context,
             held_security_ids=held_security_ids,
+            portfolio_strategy_recommendation=portfolio_strategy_recommendation,
         )
 
 
@@ -145,6 +149,14 @@ def _normalize_recommendation_weights(
         (recommendation.target_weight for recommendation in recommendations),
         Decimal("0"),
     )
+    if total_weight == 0 and target_weight > 0:
+        adjusted = list(recommendations)
+        adjusted[0] = replace(
+            adjusted[0],
+            target_weight=target_weight,
+        )
+        return tuple(adjusted)
+
     residual = target_weight - total_weight
     if residual == 0:
         return recommendations

@@ -84,6 +84,7 @@ class PortfolioBatchTarget:
     account_name: str
     currency_code: str
     is_simulated: bool
+    strategy_recommendation: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +134,7 @@ def discover_active_portfolios(
         SELECT
             p.id AS portfolio_id,
             p.name AS portfolio_name,
+            p.strategy_recommendation,
             a.name AS account_name,
             a.currency_code,
             a.is_simulated
@@ -150,6 +152,7 @@ def discover_active_portfolios(
             account_name=str(row["account_name"]),
             currency_code=str(row["currency_code"]),
             is_simulated=bool(row["is_simulated"]),
+            strategy_recommendation=str(row["strategy_recommendation"] or ""),
         )
         for row in rows
     )
@@ -426,6 +429,7 @@ def _render_report(
         f"# {portfolio.portfolio_name} - {model_name}",
         "",
         f"- Portfolio ID: `{portfolio.portfolio_id}`",
+        f"- Portfolio name: `{portfolio.portfolio_name}`",
         f"- Account: `{portfolio.account_name}`",
         f"- Account mode: `{account_mode}`",
         f"- Currency: `{portfolio.currency_code}`",
@@ -437,14 +441,14 @@ def _render_report(
             current.rename(columns={"Value": f"Value ({portfolio.currency_code})"})
         ),
         "",
-        "## Target Allocation And Drift",
+        "## NEW/PROPOSED: Target Allocation And Drift",
         _dataframe_to_markdown(target),
         "",
     ]
     # ── Asset-class weights & signals from the allocation model ───────────────
     if allocation is not None:
         sections += [
-            "## Asset-Class Weights",
+            "## NEW/PROPOSED Asset-Class Weights",
             _dataframe_to_markdown(
                 pd.DataFrame(
                     [
@@ -457,7 +461,7 @@ def _render_report(
                 )
             ),
             "",
-            "## Asset-Class Signals",
+            "## NEW/PROPOSED Asset-Class Signals",
             (
                 _dataframe_to_markdown(
                     pd.DataFrame([s.to_dict() for s in allocation.signals])
@@ -476,6 +480,10 @@ def _render_report(
         "",
         "## LLM Strategy Rationale",
         rationale or "_No rationale returned._",
+        "",
+        "## Existing Portfolio Strategy Recommendation",
+        portfolio.strategy_recommendation
+        or "_No existing strategy recommendation stored on the portfolio._",
         "",
         "## Generated Recommendations",
         orders_note,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from typing import Mapping
 
@@ -11,13 +12,14 @@ from sqlalchemy.engine import Engine
 from stratos_quant.config import AppConfig, load_settings
 from stratos_quant.data import FundDataExtractor, PortfolioValuationService
 from stratos_quant.llm import AdvisoryPipeline, StrategyRepository, create_chat_client
-from stratos_quant.reconciliation import ReconciliationService
+from stratos_quant.reconciliation import DriftBand, ReconciliationService
 from stratos_quant.strategy import (
     AllocationResult,
     EnsembleAllocationEngine,
     HierarchicalAllocationEngine,
     PriceHistoryLoader,
 )
+from stratos_quant.strategy.models import normalize_weights
 
 
 ALLOCATION_COLUMNS = ["Asset Class", "Value", "Weight"]
@@ -59,6 +61,12 @@ ORDERS_READY_MESSAGE = (
     "Run an analysis to generate rebalancing orders. If no orders are shown, "
     "the reason will appear here."
 )
+
+
+@dataclass(frozen=True, slots=True)
+class PortfolioPolicy:
+    weights: dict[str, Decimal]
+    drift_bands: dict[str, DriftBand]
 
 
 def _display_number(value: float | Decimal | int | None) -> float | None:
@@ -224,6 +232,12 @@ class DashboardController:
                 if precomputed_allocation is not None
                 else strategy_engine.run(asset_class_map=self.asset_class_map)
             )
+            policy = self._portfolio_policy(resolved_portfolio_id)
+            if policy.weights:
+                allocation = replace(allocation, weights=policy.weights)
+            portfolio_strategy_recommendation = (
+                self._portfolio_strategy_recommendation(resolved_portfolio_id)
+            )
             current_frame = self._current_allocation_frame(valuation)
             target_frame = self._allocation_target_frame(valuation, allocation)
             kpi_frame = self._strategy_kpi_frame(allocation)
@@ -290,11 +304,15 @@ class DashboardController:
                     target_weight=target_weight,
                     fund_data=self.fund_data,
                     portfolio_data=self.valuation,
+                    portfolio_strategy_recommendation=(
+                        portfolio_strategy_recommendation
+                    ),
                 )
             reconciliation = self.reconciliation.reconcile(
                 run_id=run_id,
                 portfolio_id=resolved_portfolio_id,
                 drift_threshold=self.drift_threshold,
+                drift_bands=policy.drift_bands,
                 asset_class_map=self.asset_class_map,
             )
             run = self.repository.get_run(run_id)
@@ -346,6 +364,91 @@ class DashboardController:
                 run_id,
                 "Allocation is shown, but advisory/trade generation failed.",
             )
+
+    def _portfolio_policy(self, portfolio_id: int) -> PortfolioPolicy:
+        engine = getattr(self, "engine", None)
+        if engine is None:
+            return PortfolioPolicy(weights={}, drift_bands={})
+
+        with engine.connect() as connection:
+            existing_tables = {
+                str(row["name"])
+                for row in connection.execute(
+                    text(
+                        """
+                        SELECT name
+                        FROM sqlite_master
+                        WHERE type = 'table'
+                          AND name IN ('portfolio_strategies', 'strategies')
+                        """
+                    )
+                ).mappings()
+            }
+            if existing_tables != {"portfolio_strategies", "strategies"}:
+                return PortfolioPolicy(weights={}, drift_bands={})
+
+            rows = connection.execute(
+                text(
+                    """
+                    SELECT
+                        UPPER(s.name) AS asset_class_code,
+                        ps.allocation_weight,
+                        ps.drift_up_percent,
+                        ps.drift_down_percent
+                    FROM portfolio_strategies ps
+                    JOIN strategies s ON s.id = ps.strategy_id
+                    WHERE ps.portfolio_id = :portfolio_id
+                    ORDER BY s.name
+                    """
+                ),
+                {"portfolio_id": portfolio_id},
+            ).mappings().all()
+
+        if not rows:
+            return PortfolioPolicy(weights={}, drift_bands={})
+
+        weights = normalize_weights(
+            {
+                str(row["asset_class_code"]).strip().upper(): Decimal(
+                    str(row["allocation_weight"])
+                )
+                for row in rows
+            }
+        )
+        drift_bands = {
+            str(row["asset_class_code"]).strip().upper(): DriftBand(
+                min_drift=-_policy_drift_percent(row["drift_down_percent"]),
+                max_drift=_policy_drift_percent(row["drift_up_percent"]),
+            )
+            for row in rows
+        }
+        return PortfolioPolicy(weights=weights, drift_bands=drift_bands)
+
+    def _portfolio_strategy_recommendation(self, portfolio_id: int) -> str:
+        engine = getattr(self, "engine", None)
+        if engine is None:
+            return ""
+
+        with engine.connect() as connection:
+            columns = {
+                str(row["name"])
+                for row in connection.execute(
+                    text("PRAGMA table_info(portfolios)")
+                ).mappings()
+            }
+            if "strategy_recommendation" not in columns:
+                return ""
+            recommendation = connection.execute(
+                text(
+                    """
+                    SELECT strategy_recommendation
+                    FROM portfolios
+                    WHERE id = :portfolio_id
+                    """
+                ),
+                {"portfolio_id": portfolio_id},
+            ).scalar_one_or_none()
+        return str(recommendation or "").strip()
 
     def update_executed(
         self,
@@ -539,3 +642,10 @@ class DashboardController:
         if isinstance(trades, pd.DataFrame):
             return trades
         return pd.DataFrame(trades, columns=TRADE_COLUMNS)
+
+
+def _policy_drift_percent(value: object) -> Decimal:
+    drift = Decimal(str(value))
+    if abs(drift) > Decimal("1"):
+        drift = drift / Decimal("100")
+    return abs(drift)

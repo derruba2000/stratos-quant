@@ -395,10 +395,14 @@ def test_prompts_include_strategy_evidence_and_candidate_kpis(allocation):
         target_weight="1.0000000000",
         candidate_context=candidates,
         held_security_ids={11},
+        portfolio_strategy_recommendation="Use a low-cost balanced core.",
     )
     payload = json.loads(prompt)
     assert payload["target_asset_class_weight"] == "1.0000000000"
     assert payload["held_security_ids"] == [11]
+    assert payload["portfolio_strategy_recommendation"] == (
+        "Use a low-cost balanced core."
+    )
     assert (
         payload["candidate_fundamentals"]["securities"][0]["profile"][
             "annual_expense_ratio"
@@ -589,6 +593,45 @@ def test_pipeline_rejects_material_recommendation_weight_mismatch(
                 "securities": [{"security_id": 10, "ticker": "LOWFEE"}]
             },
         )
+
+
+def test_pipeline_repairs_all_zero_recommendation_weight_for_positive_target(
+    advisory_engine,
+    allocation,
+    tmp_path,
+):
+    settings = AppConfig(
+        sqlite_db_path=tmp_path / "unused.sqlite3",
+        ollama_model="gemma4",
+        ollama_base_url="http://localhost:11434",
+    )
+    client = FakeOllamaClient(
+        settings,
+        rationale="Rationale",
+        screening_response={
+            "recommendations": [
+                {
+                    "security_id": 10,
+                    "ticker": "LOWFEE",
+                    "action_type": "HOLD",
+                    "target_weight": 0,
+                    "rationale": "Best candidate but model emitted zero.",
+                }
+            ]
+        },
+    )
+    pipeline = AdvisoryPipeline(client, StrategyRepository(advisory_engine))
+    run_id = pipeline.rationalize_allocation(portfolio_id=7, allocation=allocation)
+
+    recommendations = pipeline.screen_asset_class(
+        run_id=run_id,
+        portfolio_id=7,
+        asset_class_code="ETF",
+        target_weight=Decimal("1.0"),
+        candidate_context={"securities": [{"security_id": 10, "ticker": "LOWFEE"}]},
+    )
+
+    assert recommendations[0].target_weight == Decimal("1.0")
 
 
 def test_repository_persists_security_signal_calculations(
