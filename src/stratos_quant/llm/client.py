@@ -223,15 +223,18 @@ class NvidiaClient:
             )
 
         try:
-            response = self._client.chat.completions.create(
-                model=self.settings.nvidia_api_model,
-                messages=[
+            request: dict[str, Any] = {
+                "model": self.settings.nvidia_api_model,
+                "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": resolved_user_prompt},
                 ],
-                max_tokens=4096,
-                temperature=0,
-            )
+                "max_tokens": 4096,
+                "temperature": 0,
+            }
+            if response_schema is not None:
+                request["response_format"] = {"type": "json_object"}
+            response = self._client.chat.completions.create(**request)
         except OpenAIError as exc:
             hint = ""
             if getattr(exc, "status_code", None) == 404:

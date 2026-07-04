@@ -30,6 +30,10 @@ SCREENING_SYSTEM_PROMPT = """
 You are an Institutional Fund Screening Assistant. Select execution candidates
 only from the provided security IDs.
 
+You are restricted to selecting ticker symbols ONLY from the provided
+candidate_tickers array. Do not invent, abbreviate, or hallucinate symbols. If
+you do not recommend a trade, output an empty array [].
+
 Your selection criteria must strictly follow this investment philosophy:
 1. Cost Efficiency: Strongly prefer funds with Annual Expense Ratios < 0.0020
    (0.20%). Penalize expensive funds unless they demonstrate consistently
@@ -99,9 +103,15 @@ def screening_prompt(
     held_security_ids: Collection[int],
     portfolio_strategy_recommendation: str = "",
 ) -> str:
+    candidate_tickers = [
+        str(candidate.get("ticker", "")).strip().upper()
+        for candidate in candidate_context.get("securities", [])
+        if str(candidate.get("ticker", "")).strip()
+    ]
     payload = {
         "asset_class_code": asset_class_code,
         "target_asset_class_weight": target_weight,
+        "candidate_tickers": sorted(candidate_tickers),
         "held_security_ids": sorted(held_security_ids),
         "candidate_fundamentals": candidate_context,
         "portfolio_strategy_recommendation": portfolio_strategy_recommendation,

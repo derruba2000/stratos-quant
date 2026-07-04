@@ -13,7 +13,7 @@ from stratos_quant.reconciliation import AssetClassDrift, ReconciliationResult
 from stratos_quant.strategy import AllocationResult, AssetClassSignal
 from stratos_quant.ui import DashboardController, build_app
 from stratos_quant.ui.app import launch_network_options
-from stratos_quant.ui.controller import TRADE_COLUMNS
+from stratos_quant.ui.controller import TRADE_COLUMNS, _constrain_weights_to_policy
 
 
 class FakeValuationService:
@@ -229,8 +229,8 @@ def test_dashboard_applies_portfolio_strategy_policy_targets(tmp_path):
     controller.run_analysis(7, "Hierarchical")
 
     assert controller.pipeline.rationalized_allocation.weights == {
-        "BOND": Decimal("0.4000000000"),
-        "EQUITY": Decimal("0.6000000000"),
+        "BOND": Decimal("0.4000"),
+        "EQUITY": Decimal("0.6000"),
     }
     assert [item["asset_class_code"] for item in controller.pipeline.screened] == [
         "BOND",
@@ -242,6 +242,25 @@ def test_dashboard_applies_portfolio_strategy_policy_targets(tmp_path):
     assert controller.reconciliation.kwargs["drift_bands"]["BOND"].max_drift == (
         Decimal("0.05")
     )
+
+
+def test_policy_constraint_clips_raw_model_weights_to_max_drift():
+    constrained = _constrain_weights_to_policy(
+        {
+            "EQUITY": Decimal("0.99"),
+            "CASH": Decimal("0.01"),
+        },
+        {
+            "EQUITY": Decimal("0.60"),
+            "BOND": Decimal("0.40"),
+        },
+    )
+
+    assert constrained == {
+        "BOND": Decimal("0.2500"),
+        "EQUITY": Decimal("0.7500"),
+    }
+    assert sum(constrained.values()) == Decimal("1.0000")
 
 
 def test_dashboard_execution_checkbox_updates_database_state():

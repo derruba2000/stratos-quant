@@ -61,44 +61,18 @@ class AdvisoryPipeline:
         held_security_ids: Collection[int] = (),
         portfolio_strategy_recommendation: str = "",
     ) -> tuple[SecurityRecommendation, ...]:
-        response = self.client.chat_json(
-            system_prompt=SCREENING_SYSTEM_PROMPT,
-            user_prompt=screening_prompt(
-                asset_class_code=asset_class_code,
-                target_weight=format(target_weight, ".10f"),
-                candidate_context=candidate_context,
-                held_security_ids=held_security_ids,
-                portfolio_strategy_recommendation=portfolio_strategy_recommendation,
-            ),
-            response_schema=RECOMMENDATION_SCHEMA,
-        )
-        raw_recommendations = response.get("recommendations")
-        if not isinstance(raw_recommendations, list) or not raw_recommendations:
-            raise OllamaResponseError("Ollama returned no security recommendations")
-        try:
-            recommendations = tuple(
-                SecurityRecommendation.from_dict(item)
-                for item in raw_recommendations
-            )
-        except (KeyError, TypeError, ValueError) as exc:
-            raise OllamaResponseError(
-                f"Ollama returned an invalid recommendation: {exc}"
-            ) from exc
-
         candidates = {
             int(item["security_id"]): str(item["ticker"]).upper()
             for item in candidate_context.get("securities", [])
         }
-        for recommendation in recommendations:
-            if (
-                recommendation.security_id not in candidates
-                or candidates[recommendation.security_id]
-                != recommendation.ticker.upper()
-            ):
-                raise OllamaResponseError(
-                    f"Recommendation is not in candidate context: "
-                    f"{recommendation.ticker}"
-                )
+        recommendations = self._screen_with_retry(
+            asset_class_code=asset_class_code,
+            target_weight=target_weight,
+            candidate_context=candidate_context,
+            held_security_ids=held_security_ids,
+            portfolio_strategy_recommendation=portfolio_strategy_recommendation,
+            candidates=candidates,
+        )
         recommendations = _normalize_recommendation_weights(
             recommendations,
             target_weight,
@@ -110,6 +84,61 @@ class AdvisoryPipeline:
             recommendations=recommendations,
         )
         return recommendations
+
+    def _screen_with_retry(
+        self,
+        *,
+        asset_class_code: str,
+        target_weight: Decimal,
+        candidate_context: dict[str, Any],
+        held_security_ids: Collection[int],
+        portfolio_strategy_recommendation: str,
+        candidates: dict[int, str],
+    ) -> tuple[SecurityRecommendation, ...]:
+        user_prompt = screening_prompt(
+            asset_class_code=asset_class_code,
+            target_weight=format(target_weight, ".10f"),
+            candidate_context=candidate_context,
+            held_security_ids=held_security_ids,
+            portfolio_strategy_recommendation=portfolio_strategy_recommendation,
+        )
+        last_error: Exception | None = None
+        for _ in range(2):
+            try:
+                response = self.client.chat_json(
+                    system_prompt=SCREENING_SYSTEM_PROMPT,
+                    user_prompt=user_prompt,
+                    response_schema=RECOMMENDATION_SCHEMA,
+                )
+                raw_recommendations = response.get("recommendations")
+                if not isinstance(raw_recommendations, list) or not raw_recommendations:
+                    raise OllamaResponseError(
+                        "Ollama returned no security recommendations"
+                    )
+                recommendations = tuple(
+                    SecurityRecommendation.from_dict(item)
+                    for item in raw_recommendations
+                )
+                for recommendation in recommendations:
+                    if (
+                        recommendation.security_id not in candidates
+                        or candidates[recommendation.security_id]
+                        != recommendation.ticker.upper()
+                    ):
+                        raise OllamaResponseError(
+                            f"Recommendation is not in candidate context: "
+                            f"{recommendation.ticker}"
+                        )
+                return recommendations
+            except (KeyError, TypeError, ValueError, OllamaResponseError) as exc:
+                last_error = exc
+
+        return _deterministic_fallback_recommendation(
+            candidate_context,
+            held_security_ids=held_security_ids,
+            target_weight=target_weight,
+            reason=f"Advisory Skipped - Syntax Error: {last_error}",
+        )
 
     def screen_portfolio_asset_class(
         self,
@@ -183,3 +212,37 @@ def _normalize_recommendation_weights(
         target_weight=adjusted_weight,
     )
     return tuple(adjusted)
+
+
+def _deterministic_fallback_recommendation(
+    candidate_context: dict[str, Any],
+    *,
+    held_security_ids: Collection[int],
+    target_weight: Decimal,
+    reason: str,
+) -> tuple[SecurityRecommendation, ...]:
+    securities = candidate_context.get("securities", [])
+    if not securities:
+        raise OllamaResponseError(reason)
+    held = {int(security_id) for security_id in held_security_ids}
+    selected = next(
+        (
+            security
+            for security in securities
+            if int(security["security_id"]) in held
+        ),
+        securities[0],
+    )
+    security_id = int(selected["security_id"])
+    return (
+        SecurityRecommendation(
+            security_id=security_id,
+            ticker=str(selected["ticker"]),
+            action_type="HOLD" if security_id in held else "BUY",
+            target_weight=target_weight,
+            rationale=(
+                f"{reason}. Deterministic fallback selected "
+                f"{selected['ticker']} from the provided candidate context."
+            ),
+        ),
+    )

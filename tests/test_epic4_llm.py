@@ -705,7 +705,7 @@ def test_repository_persists_security_signal_calculations(
     assert security_row["security_count"] == 1
 
 
-def test_pipeline_rejects_hallucinated_candidate_before_persistence(
+def test_pipeline_retries_hallucinated_candidate_then_uses_fallback(
     advisory_engine,
     allocation,
     tmp_path,
@@ -733,19 +733,26 @@ def test_pipeline_rejects_hallucinated_candidate_before_persistence(
     pipeline = AdvisoryPipeline(client, StrategyRepository(advisory_engine))
     run_id = pipeline.rationalize_allocation(portfolio_id=7, allocation=allocation)
 
-    with pytest.raises(OllamaResponseError, match="not in candidate context"):
-        pipeline.screen_asset_class(
-            run_id=run_id,
-            portfolio_id=7,
-            asset_class_code="ETF",
-            target_weight=Decimal("1"),
-            candidate_context={
-                "securities": [{"security_id": 10, "ticker": "LOWFEE"}]
-            },
-        )
+    recommendations = pipeline.screen_asset_class(
+        run_id=run_id,
+        portfolio_id=7,
+        asset_class_code="ETF",
+        target_weight=Decimal("1"),
+        candidate_context={"securities": [{"security_id": 10, "ticker": "LOWFEE"}]},
+    )
+
+    assert recommendations[0].security_id == 10
+    assert recommendations[0].ticker == "LOWFEE"
+    assert "Advisory Skipped - Syntax Error" in recommendations[0].rationale
 
     with advisory_engine.connect() as connection:
-        count = connection.execute(
-            text("SELECT COUNT(*) FROM asset_recommendations")
-        ).scalar_one()
-    assert count == 0
+        row = connection.execute(
+            text(
+                """
+                SELECT security_id, llm_security_rationale
+                FROM asset_recommendations
+                """
+            )
+        ).mappings().one()
+    assert row["security_id"] == 10
+    assert "Advisory Skipped - Syntax Error" in row["llm_security_rationale"]

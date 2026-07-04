@@ -333,6 +333,7 @@ class ReconciliationService:
                 str(row["asset_class_code"]).upper(): _decimal(row["target_weight"])
                 for row in target_rows
             }
+            targets = _normalize_loaded_targets(targets)
             if sum(targets.values(), ZERO) != ONE:
                 raise ReconciliationError(
                     "Strategy target weights must sum to exactly 1"
@@ -779,6 +780,19 @@ def _normalize_drift_bands(
             )
         normalized[code.strip().upper()] = DriftBand(min_drift, max_drift)
     return normalized
+
+
+def _normalize_loaded_targets(targets: dict[str, Decimal]) -> dict[str, Decimal]:
+    total = sum(targets.values(), ZERO)
+    if total == ONE:
+        return targets
+    difference = ONE - total
+    if abs(difference) > Decimal("0.0001") or not targets:
+        return targets
+    largest = max(targets, key=targets.get)
+    adjusted = dict(targets)
+    adjusted[largest] = adjusted[largest] + difference
+    return adjusted
 
 
 def _holding_unit_value(holding) -> Decimal | None:

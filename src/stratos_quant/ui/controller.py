@@ -57,6 +57,8 @@ TRADE_COLUMNS = [
 ]
 DISPLAY_PRECISION = 2
 KPI_DISPLAY_PRECISION = 3
+MAX_DRIFT = Decimal("0.15")
+EXECUTION_WEIGHT_PRECISION = Decimal("0.0001")
 ORDERS_READY_MESSAGE = (
     "Run an analysis to generate rebalancing orders. If no orders are shown, "
     "the reason will appear here."
@@ -234,7 +236,13 @@ class DashboardController:
             )
             policy = self._portfolio_policy(resolved_portfolio_id)
             if policy.weights:
-                allocation = replace(allocation, weights=policy.weights)
+                allocation = replace(
+                    allocation,
+                    weights=_constrain_weights_to_policy(
+                        allocation.weights,
+                        policy.weights,
+                    ),
+                )
             portfolio_strategy_recommendation = (
                 self._portfolio_strategy_recommendation(resolved_portfolio_id)
             )
@@ -649,3 +657,92 @@ def _policy_drift_percent(value: object) -> Decimal:
     if abs(drift) > Decimal("1"):
         drift = drift / Decimal("100")
     return abs(drift)
+
+
+def _constrain_weights_to_policy(
+    raw_weights: Mapping[str, Decimal],
+    baseline_weights: Mapping[str, Decimal],
+    *,
+    max_drift: Decimal = MAX_DRIFT,
+) -> dict[str, Decimal]:
+    baseline = {
+        code.strip().upper(): Decimal(str(weight))
+        for code, weight in baseline_weights.items()
+        if Decimal(str(weight)) > 0
+    }
+    if not baseline:
+        return _normalize_execution_weights(raw_weights)
+    raw_codes = {code.strip().upper() for code in raw_weights}
+    if not (raw_codes & set(baseline)):
+        return _normalize_execution_weights(baseline)
+
+    clipped: dict[str, Decimal] = {}
+    floors: dict[str, Decimal] = {}
+    ceilings: dict[str, Decimal] = {}
+    for code, base_weight in baseline.items():
+        floor = max(Decimal("0"), base_weight - max_drift)
+        ceiling = min(Decimal("1"), base_weight + max_drift)
+        raw_weight = Decimal(str(raw_weights.get(code, Decimal("0"))))
+        floors[code] = floor
+        ceilings[code] = ceiling
+        clipped[code] = max(floor, min(raw_weight, ceiling))
+
+    return _redistribute_and_normalize(clipped, floors, ceilings, baseline)
+
+
+def _redistribute_and_normalize(
+    weights: dict[str, Decimal],
+    floors: Mapping[str, Decimal],
+    ceilings: Mapping[str, Decimal],
+    baseline: Mapping[str, Decimal],
+) -> dict[str, Decimal]:
+    adjusted = dict(weights)
+    for _ in range(len(adjusted) * 2):
+        total = sum(adjusted.values(), Decimal("0"))
+        difference = Decimal("1") - total
+        if abs(difference) <= Decimal("0.0000000001"):
+            break
+        if difference > 0:
+            eligible = {
+                code: min(ceilings[code] - weight, baseline[code])
+                for code, weight in adjusted.items()
+                if weight < ceilings[code]
+            }
+        else:
+            eligible = {
+                code: min(weight - floors[code], baseline[code])
+                for code, weight in adjusted.items()
+                if weight > floors[code]
+            }
+        eligible = {code: capacity for code, capacity in eligible.items() if capacity > 0}
+        if not eligible:
+            break
+        capacity_total = sum(eligible.values(), Decimal("0"))
+        remaining = abs(difference)
+        for code, capacity in eligible.items():
+            change = min(remaining * capacity / capacity_total, capacity)
+            adjusted[code] = adjusted[code] + change if difference > 0 else adjusted[code] - change
+
+    return _normalize_execution_weights(adjusted)
+
+
+def _normalize_execution_weights(weights: Mapping[str, Decimal]) -> dict[str, Decimal]:
+    cleaned = {
+        code.strip().upper(): Decimal(str(weight))
+        for code, weight in weights.items()
+        if Decimal(str(weight)) > 0
+    }
+    if not cleaned:
+        return {}
+    rounded = {
+        code: weight.quantize(EXECUTION_WEIGHT_PRECISION)
+        for code, weight in cleaned.items()
+    }
+    total = sum(rounded.values(), Decimal("0"))
+    difference = (Decimal("1") - total).quantize(EXECUTION_WEIGHT_PRECISION)
+    if difference:
+        max_code = max(rounded, key=rounded.get)
+        rounded[max_code] = (rounded[max_code] + difference).quantize(
+            EXECUTION_WEIGHT_PRECISION
+        )
+    return {code: weight for code, weight in rounded.items() if weight > 0}
