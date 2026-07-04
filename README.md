@@ -26,6 +26,10 @@ A comprehensive strategy and asset-allocation workflow guide is available in
 - Asset-class drift calculation and configurable rebalance suppression.
 - Persisted BUY, SELL, and HOLD recommendations with estimated trade values.
 - Gradio control board with portfolio/model selection and execution-status edits.
+- Backtesting engine for single and multi-asset scenarios.
+- Performance KPI calculation and persistent storage of historical metrics.
+- Strategy and asset ranking based on target goal violations.
+- Allocation constraint enforcement to prevent invalid rebalance targets.
 
 ## System flow
 
@@ -407,6 +411,9 @@ src/stratos_quant/
 ├── config/          Environment loading and validation
 ├── db/              SQLAlchemy connection and strategy schema setup
 ├── data/            Portfolio valuation and Yahoo data extraction
+├── backtest/         Single and multi-asset backtesting engine
+├── performance/      KPI calculation and historical metric persistence
+├── ranking/          Strategy and asset goal-violation ranking
 ├── strategy/        Hierarchical and Ensemble allocation engines
 ├── llm/             Ollama client, prompts, validation, and persistence
 ├── reconciliation/  Drift calculation and trade mandate generation

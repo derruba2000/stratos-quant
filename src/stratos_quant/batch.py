@@ -6,6 +6,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 import re
 from typing import Iterable, Sequence
@@ -27,6 +28,27 @@ ACCOUNT_MODES = ("all", "live", "test")
 PARALLEL_WORKERS_ENV = "PARALLEL_WORKERS"
 DEFAULT_PARALLEL_WORKERS = 4
 SIGNALS_DIR = "signals"
+THREE_DECIMAL_METRIC_COLUMNS = {
+    "12mmomentum",
+    "24mmomentum",
+    "36mmomentum",
+    "momentum12m",
+    "momentum24m",
+    "momentum36m",
+    "annualizedvolatility",
+    "sharperatio",
+    "maxdrawdown",
+    "betavsbench",
+    "betavsbenchmark",
+    "alpha",
+    "macd",
+    "twr",
+    "timeweightedreturn",
+    "cagr",
+    "sortinoratio",
+    "treynorratio",
+    "yield",
+}
 
 _PRINT_LOCK = threading.Lock()
 
@@ -62,6 +84,7 @@ class PortfolioBatchTarget:
     account_name: str
     currency_code: str
     is_simulated: bool
+    strategy_recommendation: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +134,7 @@ def discover_active_portfolios(
         SELECT
             p.id AS portfolio_id,
             p.name AS portfolio_name,
+            p.strategy_recommendation,
             a.name AS account_name,
             a.currency_code,
             a.is_simulated
@@ -128,6 +152,7 @@ def discover_active_portfolios(
             account_name=str(row["account_name"]),
             currency_code=str(row["currency_code"]),
             is_simulated=bool(row["is_simulated"]),
+            strategy_recommendation=str(row["strategy_recommendation"] or ""),
         )
         for row in rows
     )
@@ -176,18 +201,22 @@ class StrategyBatchRunner:
         )
 
         # ── Step 1: compute signals once per model ────────────────────────────
-        allocations: dict[str, AllocationResult] = {}
+        allocations: dict[str, AllocationResult | None] = {}
+        can_precompute = hasattr(self.controller, "engines")
         for model_name in models:
             if model_name not in ALLOCATION_MODELS:
                 raise ValueError(
                     f"model must be one of: {', '.join(ALLOCATION_MODELS)}"
                 )
+            if not can_precompute:
+                allocations[model_name] = None
+                continue
             _progress(
                 f"[batch] Computing market signals for model '{model_name}' ..."
             )
             engine = self.controller.engines[model_name]
             allocation = engine.run(
-                asset_class_map=self.controller.asset_class_map
+                asset_class_map=getattr(self.controller, "asset_class_map", {})
             )
             allocations[model_name] = allocation
 
@@ -205,7 +234,9 @@ class StrategyBatchRunner:
             )
 
         # ── Step 2: dispatch portfolio × model tasks to worker pool ──────────
-        work_items: list[tuple[PortfolioBatchTarget, str, AllocationResult]] = [
+        work_items: list[
+            tuple[PortfolioBatchTarget, str, AllocationResult | None]
+        ] = [
             (portfolio, model_name, allocations[model_name])
             for portfolio in portfolios
             for model_name in models
@@ -215,7 +246,7 @@ class StrategyBatchRunner:
         lock = threading.Lock()
 
         def _run_work_item(
-            item: tuple[PortfolioBatchTarget, str, AllocationResult],
+            item: tuple[PortfolioBatchTarget, str, AllocationResult | None],
         ) -> None:
             portfolio, model_name, allocation = item
             report = self._run_one(
@@ -251,21 +282,34 @@ class StrategyBatchRunner:
             f"(ID={portfolio.portfolio_id})]"
         )
         _progress(f"{label} → Starting {model_name} analysis ...")
-        (
-            current,
-            target,
-            kpis,
-            components,
-            rationale,
-            orders_note,
-            trades,
-            run_id,
-            status,
-        ) = self.controller.run_analysis(
-            portfolio.portfolio_id,
-            model_name,
-            precomputed_allocation=precomputed_allocation,
-        )
+        if precomputed_allocation is None:
+            (
+                current,
+                target,
+                kpis,
+                components,
+                rationale,
+                orders_note,
+                trades,
+                run_id,
+                status,
+            ) = self.controller.run_analysis(portfolio.portfolio_id, model_name)
+        else:
+            (
+                current,
+                target,
+                kpis,
+                components,
+                rationale,
+                orders_note,
+                trades,
+                run_id,
+                status,
+            ) = self.controller.run_analysis(
+                portfolio.portfolio_id,
+                model_name,
+                precomputed_allocation=precomputed_allocation,
+            )
         _progress(
             f"{label} → Done (run_id={run_id}, status={status!r})"
         )
@@ -385,6 +429,7 @@ def _render_report(
         f"# {portfolio.portfolio_name} - {model_name}",
         "",
         f"- Portfolio ID: `{portfolio.portfolio_id}`",
+        f"- Portfolio name: `{portfolio.portfolio_name}`",
         f"- Account: `{portfolio.account_name}`",
         f"- Account mode: `{account_mode}`",
         f"- Currency: `{portfolio.currency_code}`",
@@ -396,14 +441,14 @@ def _render_report(
             current.rename(columns={"Value": f"Value ({portfolio.currency_code})"})
         ),
         "",
-        "## Target Allocation And Drift",
+        "## NEW/PROPOSED: Target Allocation And Drift",
         _dataframe_to_markdown(target),
         "",
     ]
     # ── Asset-class weights & signals from the allocation model ───────────────
     if allocation is not None:
         sections += [
-            "## Asset-Class Weights",
+            "## NEW/PROPOSED Asset-Class Weights",
             _dataframe_to_markdown(
                 pd.DataFrame(
                     [
@@ -416,7 +461,7 @@ def _render_report(
                 )
             ),
             "",
-            "## Asset-Class Signals",
+            "## NEW/PROPOSED Asset-Class Signals",
             (
                 _dataframe_to_markdown(
                     pd.DataFrame([s.to_dict() for s in allocation.signals])
@@ -436,6 +481,10 @@ def _render_report(
         "## LLM Strategy Rationale",
         rationale or "_No rationale returned._",
         "",
+        "## Existing Portfolio Strategy Recommendation",
+        portfolio.strategy_recommendation
+        or "_No existing strategy recommendation stored on the portfolio._",
+        "",
         "## Generated Recommendations",
         orders_note,
         "",
@@ -451,8 +500,8 @@ def _dataframe_to_markdown(frame: pd.DataFrame) -> str:
     columns = [str(column) for column in frame.columns]
     rows = [
         [
-            _format_cell(value)
-            for value in row
+            _format_cell(value, column)
+            for column, value in zip(columns, row, strict=True)
         ]
         for row in frame.itertuples(index=False, name=None)
     ]
@@ -475,10 +524,17 @@ def _dataframe_to_markdown(frame: pd.DataFrame) -> str:
     return "\n".join([header, separator, *body])
 
 
-def _format_cell(value: object) -> str:
+def _format_cell(value: object, column: str) -> str:
     if pd.isna(value):
         return ""
+    if _is_three_decimal_metric(column) and isinstance(value, (int, float, Decimal)):
+        return f"{float(value):.3f}"
     return str(value).replace("\n", " ")
+
+
+def _is_three_decimal_metric(column: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "", column.lower())
+    return normalized in THREE_DECIMAL_METRIC_COLUMNS
 
 
 def run_strategy_batch(

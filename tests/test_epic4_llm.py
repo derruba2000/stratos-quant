@@ -197,10 +197,64 @@ def test_nvidia_client_uses_configured_model_key_and_json_schema(tmp_path):
     call = openai_client.completions.calls[0]
     assert call["model"] == "nvidia/llama-3.1-nemotron"
     assert call["max_tokens"] == 4096
+    assert call["temperature"] == 0
     assert call["messages"][0] == {"role": "system", "content": "system"}
     assert call["messages"][1]["role"] == "user"
     assert call["messages"][1]["content"].startswith("user")
     assert '"type": "object"' in call["messages"][1]["content"]
+
+
+def test_nvidia_client_accepts_json_wrapped_in_markdown_fence(tmp_path):
+    db_file = tmp_path / "db.sqlite3"
+    db_file.touch()
+    settings = AppConfig(
+        sqlite_db_path=db_file,
+        ollama_model="",
+        ollama_base_url="",
+        api_usage="NVIDIA",
+        nvidia_api_model="nvidia/llama-3.1-nemotron",
+        nvidia_api_key="secret-key",
+    )
+    openai_client = FakeOpenAIClient(
+        content='```json\n{"recommendations":[]}\n```'
+    )
+
+    result = NvidiaClient(
+        settings,
+        openai_client=openai_client,
+        timeout=9,
+    ).chat_json(
+        system_prompt="system",
+        user_prompt="user",
+        response_schema={"type": "object"},
+    )
+
+    assert result == {"recommendations": []}
+
+
+def test_nvidia_client_invalid_json_error_includes_excerpt(tmp_path):
+    db_file = tmp_path / "db.sqlite3"
+    db_file.touch()
+    settings = AppConfig(
+        sqlite_db_path=db_file,
+        ollama_model="",
+        ollama_base_url="",
+        api_usage="NVIDIA",
+        nvidia_api_model="nvidia/llama-3.1-nemotron",
+        nvidia_api_key="secret-key",
+    )
+    openai_client = FakeOpenAIClient(content="I cannot return recommendations.")
+
+    with pytest.raises(OllamaResponseError, match="Response excerpt"):
+        NvidiaClient(
+            settings,
+            openai_client=openai_client,
+            timeout=9,
+        ).chat_json(
+            system_prompt="system",
+            user_prompt="user",
+            response_schema={"type": "object"},
+        )
 
 
 def test_chat_client_factory_uses_nvidia_when_configured(tmp_path):
@@ -341,10 +395,14 @@ def test_prompts_include_strategy_evidence_and_candidate_kpis(allocation):
         target_weight="1.0000000000",
         candidate_context=candidates,
         held_security_ids={11},
+        portfolio_strategy_recommendation="Use a low-cost balanced core.",
     )
     payload = json.loads(prompt)
     assert payload["target_asset_class_weight"] == "1.0000000000"
     assert payload["held_security_ids"] == [11]
+    assert payload["portfolio_strategy_recommendation"] == (
+        "Use a low-cost balanced core."
+    )
     assert (
         payload["candidate_fundamentals"]["securities"][0]["profile"][
             "annual_expense_ratio"
@@ -448,6 +506,134 @@ def test_pipeline_persists_rationale_targets_and_recommendations(
     assert recommendation["is_executed"] == 0
 
 
+def test_pipeline_normalizes_tiny_recommendation_weight_residual(
+    advisory_engine,
+    allocation,
+    tmp_path,
+):
+    settings = AppConfig(
+        sqlite_db_path=tmp_path / "unused.sqlite3",
+        ollama_model="gemma4",
+        ollama_base_url="http://localhost:11434",
+    )
+    client = FakeOllamaClient(
+        settings,
+        rationale="Rationale",
+        screening_response={
+            "recommendations": [
+                {
+                    "security_id": 10,
+                    "ticker": "LOWFEE",
+                    "action_type": "BUY",
+                    "target_weight": 0.9999,
+                    "rationale": "Close enough after model rounding.",
+                }
+            ]
+        },
+    )
+    pipeline = AdvisoryPipeline(client, StrategyRepository(advisory_engine))
+    run_id = pipeline.rationalize_allocation(portfolio_id=7, allocation=allocation)
+
+    recommendations = pipeline.screen_asset_class(
+        run_id=run_id,
+        portfolio_id=7,
+        asset_class_code="ETF",
+        target_weight=Decimal("1.0"),
+        candidate_context={
+            "securities": [{"security_id": 10, "ticker": "LOWFEE"}]
+        },
+    )
+
+    assert recommendations[0].target_weight == Decimal("1.0000")
+    with advisory_engine.connect() as connection:
+        target_weight = connection.execute(
+            text(
+                "SELECT target_weight FROM asset_recommendations WHERE run_id = :id"
+            ),
+            {"id": run_id},
+        ).scalar_one()
+    assert Decimal(str(target_weight)) == Decimal("1.0000")
+
+
+def test_pipeline_rejects_material_recommendation_weight_mismatch(
+    advisory_engine,
+    allocation,
+    tmp_path,
+):
+    settings = AppConfig(
+        sqlite_db_path=tmp_path / "unused.sqlite3",
+        ollama_model="gemma4",
+        ollama_base_url="http://localhost:11434",
+    )
+    client = FakeOllamaClient(
+        settings,
+        rationale="Rationale",
+        screening_response={
+            "recommendations": [
+                {
+                    "security_id": 10,
+                    "ticker": "LOWFEE",
+                    "action_type": "BUY",
+                    "target_weight": 0.95,
+                    "rationale": "Wrong total.",
+                }
+            ]
+        },
+    )
+    pipeline = AdvisoryPipeline(client, StrategyRepository(advisory_engine))
+    run_id = pipeline.rationalize_allocation(portfolio_id=7, allocation=allocation)
+
+    with pytest.raises(OllamaResponseError, match=r"sum=0.95, target=1.0"):
+        pipeline.screen_asset_class(
+            run_id=run_id,
+            portfolio_id=7,
+            asset_class_code="ETF",
+            target_weight=Decimal("1.0"),
+            candidate_context={
+                "securities": [{"security_id": 10, "ticker": "LOWFEE"}]
+            },
+        )
+
+
+def test_pipeline_repairs_all_zero_recommendation_weight_for_positive_target(
+    advisory_engine,
+    allocation,
+    tmp_path,
+):
+    settings = AppConfig(
+        sqlite_db_path=tmp_path / "unused.sqlite3",
+        ollama_model="gemma4",
+        ollama_base_url="http://localhost:11434",
+    )
+    client = FakeOllamaClient(
+        settings,
+        rationale="Rationale",
+        screening_response={
+            "recommendations": [
+                {
+                    "security_id": 10,
+                    "ticker": "LOWFEE",
+                    "action_type": "HOLD",
+                    "target_weight": 0,
+                    "rationale": "Best candidate but model emitted zero.",
+                }
+            ]
+        },
+    )
+    pipeline = AdvisoryPipeline(client, StrategyRepository(advisory_engine))
+    run_id = pipeline.rationalize_allocation(portfolio_id=7, allocation=allocation)
+
+    recommendations = pipeline.screen_asset_class(
+        run_id=run_id,
+        portfolio_id=7,
+        asset_class_code="ETF",
+        target_weight=Decimal("1.0"),
+        candidate_context={"securities": [{"security_id": 10, "ticker": "LOWFEE"}]},
+    )
+
+    assert recommendations[0].target_weight == Decimal("1.0")
+
+
 def test_repository_persists_security_signal_calculations(
     advisory_engine,
     tmp_path,
@@ -519,7 +705,7 @@ def test_repository_persists_security_signal_calculations(
     assert security_row["security_count"] == 1
 
 
-def test_pipeline_rejects_hallucinated_candidate_before_persistence(
+def test_pipeline_retries_hallucinated_candidate_then_uses_fallback(
     advisory_engine,
     allocation,
     tmp_path,
@@ -547,19 +733,26 @@ def test_pipeline_rejects_hallucinated_candidate_before_persistence(
     pipeline = AdvisoryPipeline(client, StrategyRepository(advisory_engine))
     run_id = pipeline.rationalize_allocation(portfolio_id=7, allocation=allocation)
 
-    with pytest.raises(OllamaResponseError, match="not in candidate context"):
-        pipeline.screen_asset_class(
-            run_id=run_id,
-            portfolio_id=7,
-            asset_class_code="ETF",
-            target_weight=Decimal("1"),
-            candidate_context={
-                "securities": [{"security_id": 10, "ticker": "LOWFEE"}]
-            },
-        )
+    recommendations = pipeline.screen_asset_class(
+        run_id=run_id,
+        portfolio_id=7,
+        asset_class_code="ETF",
+        target_weight=Decimal("1"),
+        candidate_context={"securities": [{"security_id": 10, "ticker": "LOWFEE"}]},
+    )
+
+    assert recommendations[0].security_id == 10
+    assert recommendations[0].ticker == "LOWFEE"
+    assert "Advisory Skipped - Syntax Error" in recommendations[0].rationale
 
     with advisory_engine.connect() as connection:
-        count = connection.execute(
-            text("SELECT COUNT(*) FROM asset_recommendations")
-        ).scalar_one()
-    assert count == 0
+        row = connection.execute(
+            text(
+                """
+                SELECT security_id, llm_security_rationale
+                FROM asset_recommendations
+                """
+            )
+        ).mappings().one()
+    assert row["security_id"] == 10
+    assert "Advisory Skipped - Syntax Error" in row["llm_security_rationale"]

@@ -19,6 +19,8 @@ from .controller import (
     ORDERS_READY_MESSAGE,
 )
 
+LOGO_PATH = Path(__file__).resolve().parents[3] / "logoStrat.png"
+
 
 CSS = """
 .sq-shell { max-width: 1440px; margin: 0 auto; }
@@ -27,6 +29,18 @@ CSS = """
   border-radius: 18px;
   padding: 24px 28px;
   background: linear-gradient(135deg, rgba(20, 184, 166, .13), rgba(59, 130, 246, .08));
+  align-items: center;
+  gap: 18px;
+}
+.sq-logo {
+  flex: 0 0 76px;
+  min-width: 76px !important;
+}
+.sq-logo img {
+  object-fit: contain !important;
+}
+.sq-title h1 {
+  margin-top: 0;
 }
 .sq-status { min-height: 46px; }
 .sq-rationale {
@@ -56,14 +70,24 @@ def build_app(controller: DashboardController | None = None) -> gr.Blocks:
     ) as app:
         run_state = gr.State(value=None)
         with gr.Column(elem_classes="sq-shell"):
-            gr.Markdown(
-                """
-                # STRATOS-QUANT CONTROL BOARD
-                Quantitative portfolio targets, local-LLM rationale, and
-                executable rebalance mandates in one place.
-                """,
-                elem_classes="sq-hero",
-            )
+            with gr.Row(elem_classes="sq-hero"):
+                gr.Image(
+                    value=str(LOGO_PATH),
+                    height=76,
+                    width=76,
+                    show_label=False,
+                    container=False,
+                    interactive=False,
+                    elem_classes="sq-logo",
+                )
+                gr.Markdown(
+                    """
+                    # STRATOS-QUANT CONTROL BOARD
+                    Quantitative portfolio targets, local-LLM rationale, and
+                    executable rebalance mandates in one place.
+                    """,
+                    elem_classes="sq-title",
+                )
             gr.Markdown(
                 f"**Database:** `{Path(settings.sqlite_db_path).name}` &nbsp; · "
                 f"&nbsp; **LLM provider:** `{settings.llm_provider_label}` &nbsp; · "
@@ -208,6 +232,7 @@ def main() -> None:
     build_app().queue().launch(
         **network_options,
         show_error=True,
+        favicon_path=LOGO_PATH,
         theme=gr.themes.Soft(primary_hue="teal", secondary_hue="blue"),
         css=CSS,
     )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import ssl
 from typing import Any, Mapping, Protocol
 
@@ -23,6 +24,40 @@ def _response_excerpt(response: requests.Response | None) -> str:
     if len(compact) > 500:
         compact = f"{compact[:500]}..."
     return f" Response body: {compact}"
+
+
+def _content_excerpt(content: str) -> str:
+    compact = " ".join(content.split())
+    if len(compact) > 500:
+        compact = f"{compact[:500]}..."
+    return compact
+
+
+def _loads_json_object(content: str, *, provider: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError:
+        parsed = _loads_embedded_json(content)
+    if not isinstance(parsed, dict):
+        raise OllamaResponseError(f"{provider} JSON response must be an object")
+    return parsed
+
+
+def _loads_embedded_json(content: str) -> Any:
+    stripped = content.strip()
+    fence_match = re.search(
+        r"```(?:json)?\s*(?P<body>.*?)\s*```",
+        stripped,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if fence_match is not None:
+        return json.loads(fence_match.group("body"))
+
+    start = stripped.find("{")
+    end = stripped.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        raise json.JSONDecodeError("No JSON object found", stripped, 0)
+    return json.loads(stripped[start : end + 1])
 
 
 class OllamaClient:
@@ -98,12 +133,12 @@ class OllamaClient:
             response_schema=response_schema,
         )
         try:
-            parsed = json.loads(content)
+            return _loads_json_object(content, provider="Ollama")
         except json.JSONDecodeError as exc:
-            raise OllamaResponseError("Ollama returned invalid JSON") from exc
-        if not isinstance(parsed, dict):
-            raise OllamaResponseError("Ollama JSON response must be an object")
-        return parsed
+            raise OllamaResponseError(
+                "Ollama returned invalid JSON. "
+                f"Response excerpt: {_content_excerpt(content)}"
+            ) from exc
 
 
 class ChatClient(Protocol):
@@ -188,14 +223,18 @@ class NvidiaClient:
             )
 
         try:
-            response = self._client.chat.completions.create(
-                model=self.settings.nvidia_api_model,
-                messages=[
+            request: dict[str, Any] = {
+                "model": self.settings.nvidia_api_model,
+                "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": resolved_user_prompt},
                 ],
-                max_tokens=4096,
-            )
+                "max_tokens": 4096,
+                "temperature": 0,
+            }
+            if response_schema is not None:
+                request["response_format"] = {"type": "json_object"}
+            response = self._client.chat.completions.create(**request)
         except OpenAIError as exc:
             hint = ""
             if getattr(exc, "status_code", None) == 404:
@@ -235,12 +274,12 @@ class NvidiaClient:
             response_schema=response_schema,
         )
         try:
-            parsed = json.loads(content)
+            return _loads_json_object(content, provider="NVIDIA")
         except json.JSONDecodeError as exc:
-            raise OllamaResponseError("NVIDIA returned invalid JSON") from exc
-        if not isinstance(parsed, dict):
-            raise OllamaResponseError("NVIDIA JSON response must be an object")
-        return parsed
+            raise OllamaResponseError(
+                "NVIDIA returned invalid JSON. "
+                f"Response excerpt: {_content_excerpt(content)}"
+            ) from exc
 
 
 def create_chat_client(

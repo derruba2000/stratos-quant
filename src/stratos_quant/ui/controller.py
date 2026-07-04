@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from typing import Mapping
 
@@ -11,13 +12,14 @@ from sqlalchemy.engine import Engine
 from stratos_quant.config import AppConfig, load_settings
 from stratos_quant.data import FundDataExtractor, PortfolioValuationService
 from stratos_quant.llm import AdvisoryPipeline, StrategyRepository, create_chat_client
-from stratos_quant.reconciliation import ReconciliationService
+from stratos_quant.reconciliation import DriftBand, ReconciliationService
 from stratos_quant.strategy import (
     AllocationResult,
     EnsembleAllocationEngine,
     HierarchicalAllocationEngine,
     PriceHistoryLoader,
 )
+from stratos_quant.strategy.models import normalize_weights
 
 
 ALLOCATION_COLUMNS = ["Asset Class", "Value", "Weight"]
@@ -27,7 +29,19 @@ STRATEGY_KPI_COLUMNS = [
     "Asset Class",
     "Trend Positive",
     "12M Momentum",
+    "24M Momentum",
+    "36M Momentum",
     "Annualized Volatility",
+    "Sharpe Ratio",
+    "Max Drawdown",
+    "Beta vs Bench",
+    "Alpha",
+    "MACD",
+    "TWR",
+    "CAGR",
+    "Sortino Ratio",
+    "Treynor Ratio",
+    "Yield",
     "Security Count",
 ]
 COMPONENT_COLUMNS = ["Component", "Asset Class", "Weight"]
@@ -42,10 +56,19 @@ TRADE_COLUMNS = [
     "Executed",
 ]
 DISPLAY_PRECISION = 2
+KPI_DISPLAY_PRECISION = 3
+MAX_DRIFT = Decimal("0.15")
+EXECUTION_WEIGHT_PRECISION = Decimal("0.0001")
 ORDERS_READY_MESSAGE = (
     "Run an analysis to generate rebalancing orders. If no orders are shown, "
     "the reason will appear here."
 )
+
+
+@dataclass(frozen=True, slots=True)
+class PortfolioPolicy:
+    weights: dict[str, Decimal]
+    drift_bands: dict[str, DriftBand]
 
 
 def _display_number(value: float | Decimal | int | None) -> float | None:
@@ -53,6 +76,68 @@ def _display_number(value: float | Decimal | int | None) -> float | None:
     if value is None:
         return None
     return round(float(value), DISPLAY_PRECISION)
+
+
+def _display_kpi_number(value: float | Decimal | int | None) -> float | None:
+    if value is None:
+        return None
+    return round(float(value), KPI_DISPLAY_PRECISION)
+
+
+def _strategy_kpi_row(
+    *,
+    ticker: str,
+    asset_class: str,
+    trend_positive: bool,
+    signal,
+    security_count: int,
+) -> dict[str, object]:
+    return {
+        "Ticker": ticker,
+        "Asset Class": asset_class,
+        "Trend Positive": trend_positive,
+        "12M Momentum": _display_kpi_number(signal.momentum_12m),
+        "24M Momentum": _display_kpi_number(signal.momentum_24m),
+        "36M Momentum": _display_kpi_number(signal.momentum_36m),
+        "Annualized Volatility": _display_kpi_number(signal.annualized_volatility),
+        "Sharpe Ratio": _display_kpi_number(signal.sharpe_ratio),
+        "Max Drawdown": _display_kpi_number(signal.max_drawdown),
+        "Beta vs Bench": _display_kpi_number(signal.beta_vs_benchmark),
+        "Alpha": _display_kpi_number(signal.alpha),
+        "MACD": _display_kpi_number(signal.macd),
+        "TWR": _display_kpi_number(signal.time_weighted_return),
+        "CAGR": _display_kpi_number(signal.cagr),
+        "Sortino Ratio": _display_kpi_number(signal.sortino_ratio),
+        "Treynor Ratio": _display_kpi_number(signal.treynor_ratio),
+        "Yield": _display_kpi_number(signal.yield_),
+        "Security Count": security_count,
+    }
+
+
+def _portfolio_kpi_row(rows: list[dict[str, object]]) -> dict[str, object]:
+    numeric_columns = [
+        column
+        for column in STRATEGY_KPI_COLUMNS
+        if column not in {"Ticker", "Asset Class", "Trend Positive", "Security Count"}
+    ]
+    row: dict[str, object] = {
+        "Ticker": "Portfolio",
+        "Asset Class": "Portfolio",
+        "Trend Positive": all(bool(item["Trend Positive"]) for item in rows),
+        "Security Count": sum(int(item["Security Count"]) for item in rows),
+    }
+    for column in numeric_columns:
+        values = [
+            float(item[column])
+            for item in rows
+            if item.get(column) is not None
+        ]
+        row[column] = (
+            round(sum(values) / len(values), KPI_DISPLAY_PRECISION)
+            if values
+            else None
+        )
+    return row
 
 
 class DashboardController:
@@ -149,6 +234,18 @@ class DashboardController:
                 if precomputed_allocation is not None
                 else strategy_engine.run(asset_class_map=self.asset_class_map)
             )
+            policy = self._portfolio_policy(resolved_portfolio_id)
+            if policy.weights:
+                allocation = replace(
+                    allocation,
+                    weights=_constrain_weights_to_policy(
+                        allocation.weights,
+                        policy.weights,
+                    ),
+                )
+            portfolio_strategy_recommendation = (
+                self._portfolio_strategy_recommendation(resolved_portfolio_id)
+            )
             current_frame = self._current_allocation_frame(valuation)
             target_frame = self._allocation_target_frame(valuation, allocation)
             kpi_frame = self._strategy_kpi_frame(allocation)
@@ -189,8 +286,9 @@ class DashboardController:
                         f"{run['llm_overall_rationale']}"
                     ),
                     (
-                        "No orders generated because reconciliation is blocked by "
-                        "ledger quality. The reconstructed cash balance is negative, "
+                        "No orders generated. Reconciliation is disabled because "
+                        "ledger quality is blocking trade generation. The "
+                        "reconstructed cash balance is negative, "
                         "indicating missing **initial funding transactions**. "
                         "To enable rebalancing: Add a DEPOSIT transaction that records "
                         "the original account funding (this does not re-count your holdings, "
@@ -214,11 +312,15 @@ class DashboardController:
                     target_weight=target_weight,
                     fund_data=self.fund_data,
                     portfolio_data=self.valuation,
+                    portfolio_strategy_recommendation=(
+                        portfolio_strategy_recommendation
+                    ),
                 )
             reconciliation = self.reconciliation.reconcile(
                 run_id=run_id,
                 portfolio_id=resolved_portfolio_id,
                 drift_threshold=self.drift_threshold,
+                drift_bands=policy.drift_bands,
                 asset_class_map=self.asset_class_map,
             )
             run = self.repository.get_run(run_id)
@@ -270,6 +372,91 @@ class DashboardController:
                 run_id,
                 "Allocation is shown, but advisory/trade generation failed.",
             )
+
+    def _portfolio_policy(self, portfolio_id: int) -> PortfolioPolicy:
+        engine = getattr(self, "engine", None)
+        if engine is None:
+            return PortfolioPolicy(weights={}, drift_bands={})
+
+        with engine.connect() as connection:
+            existing_tables = {
+                str(row["name"])
+                for row in connection.execute(
+                    text(
+                        """
+                        SELECT name
+                        FROM sqlite_master
+                        WHERE type = 'table'
+                          AND name IN ('portfolio_strategies', 'strategies')
+                        """
+                    )
+                ).mappings()
+            }
+            if existing_tables != {"portfolio_strategies", "strategies"}:
+                return PortfolioPolicy(weights={}, drift_bands={})
+
+            rows = connection.execute(
+                text(
+                    """
+                    SELECT
+                        UPPER(s.name) AS asset_class_code,
+                        ps.allocation_weight,
+                        ps.drift_up_percent,
+                        ps.drift_down_percent
+                    FROM portfolio_strategies ps
+                    JOIN strategies s ON s.id = ps.strategy_id
+                    WHERE ps.portfolio_id = :portfolio_id
+                    ORDER BY s.name
+                    """
+                ),
+                {"portfolio_id": portfolio_id},
+            ).mappings().all()
+
+        if not rows:
+            return PortfolioPolicy(weights={}, drift_bands={})
+
+        weights = normalize_weights(
+            {
+                str(row["asset_class_code"]).strip().upper(): Decimal(
+                    str(row["allocation_weight"])
+                )
+                for row in rows
+            }
+        )
+        drift_bands = {
+            str(row["asset_class_code"]).strip().upper(): DriftBand(
+                min_drift=-_policy_drift_percent(row["drift_down_percent"]),
+                max_drift=_policy_drift_percent(row["drift_up_percent"]),
+            )
+            for row in rows
+        }
+        return PortfolioPolicy(weights=weights, drift_bands=drift_bands)
+
+    def _portfolio_strategy_recommendation(self, portfolio_id: int) -> str:
+        engine = getattr(self, "engine", None)
+        if engine is None:
+            return ""
+
+        with engine.connect() as connection:
+            columns = {
+                str(row["name"])
+                for row in connection.execute(
+                    text("PRAGMA table_info(portfolios)")
+                ).mappings()
+            }
+            if "strategy_recommendation" not in columns:
+                return ""
+            recommendation = connection.execute(
+                text(
+                    """
+                    SELECT strategy_recommendation
+                    FROM portfolios
+                    WHERE id = :portfolio_id
+                    """
+                ),
+                {"portfolio_id": portfolio_id},
+            ).scalar_one_or_none()
+        return str(recommendation or "").strip()
 
     def update_executed(
         self,
@@ -354,38 +541,30 @@ class DashboardController:
     @staticmethod
     def _strategy_kpi_frame(allocation) -> pd.DataFrame:
         if allocation.security_signals:
-            return pd.DataFrame(
-                [
-                    {
-                        "Ticker": signal.ticker,
-                        "Asset Class": signal.asset_class_code,
-                        "Trend Positive": signal.trend_positive,
-                        "12M Momentum": _display_number(signal.momentum_12m),
-                        "Annualized Volatility": _display_number(
-                            signal.annualized_volatility
-                        ),
-                        "Security Count": 1,
-                    }
-                    for signal in allocation.security_signals
-                ],
-                columns=STRATEGY_KPI_COLUMNS,
-            )
-        return pd.DataFrame(
-            [
-                {
-                    "Ticker": "Class aggregate",
-                    "Asset Class": signal.asset_class_code,
-                    "Trend Positive": signal.trend_positive,
-                    "12M Momentum": _display_number(signal.momentum_12m),
-                    "Annualized Volatility": _display_number(
-                        signal.annualized_volatility
-                    ),
-                    "Security Count": signal.security_count,
-                }
+            rows = [
+                _strategy_kpi_row(
+                    ticker=signal.ticker,
+                    asset_class=signal.asset_class_code,
+                    trend_positive=signal.trend_positive,
+                    signal=signal,
+                    security_count=1,
+                )
+                for signal in allocation.security_signals
+            ]
+        else:
+            rows = [
+                _strategy_kpi_row(
+                    ticker="Class aggregate",
+                    asset_class=signal.asset_class_code,
+                    trend_positive=signal.trend_positive,
+                    signal=signal,
+                    security_count=signal.security_count,
+                )
                 for signal in allocation.signals
-            ],
-            columns=STRATEGY_KPI_COLUMNS,
-        )
+            ]
+        if rows:
+            rows.insert(0, _portfolio_kpi_row(rows))
+        return pd.DataFrame(rows, columns=STRATEGY_KPI_COLUMNS)
 
     @staticmethod
     def _component_frame(allocation) -> pd.DataFrame:
@@ -471,3 +650,99 @@ class DashboardController:
         if isinstance(trades, pd.DataFrame):
             return trades
         return pd.DataFrame(trades, columns=TRADE_COLUMNS)
+
+
+def _policy_drift_percent(value: object) -> Decimal:
+    drift = Decimal(str(value))
+    if abs(drift) > Decimal("1"):
+        drift = drift / Decimal("100")
+    return abs(drift)
+
+
+def _constrain_weights_to_policy(
+    raw_weights: Mapping[str, Decimal],
+    baseline_weights: Mapping[str, Decimal],
+    *,
+    max_drift: Decimal = MAX_DRIFT,
+) -> dict[str, Decimal]:
+    baseline = {
+        code.strip().upper(): Decimal(str(weight))
+        for code, weight in baseline_weights.items()
+        if Decimal(str(weight)) > 0
+    }
+    if not baseline:
+        return _normalize_execution_weights(raw_weights)
+    raw_codes = {code.strip().upper() for code in raw_weights}
+    if not (raw_codes & set(baseline)):
+        return _normalize_execution_weights(baseline)
+
+    clipped: dict[str, Decimal] = {}
+    floors: dict[str, Decimal] = {}
+    ceilings: dict[str, Decimal] = {}
+    for code, base_weight in baseline.items():
+        floor = max(Decimal("0"), base_weight - max_drift)
+        ceiling = min(Decimal("1"), base_weight + max_drift)
+        raw_weight = Decimal(str(raw_weights.get(code, Decimal("0"))))
+        floors[code] = floor
+        ceilings[code] = ceiling
+        clipped[code] = max(floor, min(raw_weight, ceiling))
+
+    return _redistribute_and_normalize(clipped, floors, ceilings, baseline)
+
+
+def _redistribute_and_normalize(
+    weights: dict[str, Decimal],
+    floors: Mapping[str, Decimal],
+    ceilings: Mapping[str, Decimal],
+    baseline: Mapping[str, Decimal],
+) -> dict[str, Decimal]:
+    adjusted = dict(weights)
+    for _ in range(len(adjusted) * 2):
+        total = sum(adjusted.values(), Decimal("0"))
+        difference = Decimal("1") - total
+        if abs(difference) <= Decimal("0.0000000001"):
+            break
+        if difference > 0:
+            eligible = {
+                code: min(ceilings[code] - weight, baseline[code])
+                for code, weight in adjusted.items()
+                if weight < ceilings[code]
+            }
+        else:
+            eligible = {
+                code: min(weight - floors[code], baseline[code])
+                for code, weight in adjusted.items()
+                if weight > floors[code]
+            }
+        eligible = {code: capacity for code, capacity in eligible.items() if capacity > 0}
+        if not eligible:
+            break
+        capacity_total = sum(eligible.values(), Decimal("0"))
+        remaining = abs(difference)
+        for code, capacity in eligible.items():
+            change = min(remaining * capacity / capacity_total, capacity)
+            adjusted[code] = adjusted[code] + change if difference > 0 else adjusted[code] - change
+
+    return _normalize_execution_weights(adjusted)
+
+
+def _normalize_execution_weights(weights: Mapping[str, Decimal]) -> dict[str, Decimal]:
+    cleaned = {
+        code.strip().upper(): Decimal(str(weight))
+        for code, weight in weights.items()
+        if Decimal(str(weight)) > 0
+    }
+    if not cleaned:
+        return {}
+    rounded = {
+        code: weight.quantize(EXECUTION_WEIGHT_PRECISION)
+        for code, weight in cleaned.items()
+    }
+    total = sum(rounded.values(), Decimal("0"))
+    difference = (Decimal("1") - total).quantize(EXECUTION_WEIGHT_PRECISION)
+    if difference:
+        max_code = max(rounded, key=rounded.get)
+        rounded[max_code] = (rounded[max_code] + difference).quantize(
+            EXECUTION_WEIGHT_PRECISION
+        )
+    return {code: weight for code, weight in rounded.items() if weight > 0}

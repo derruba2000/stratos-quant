@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from decimal import Decimal
 from typing import Any, Collection
 
@@ -17,6 +18,8 @@ from .prompts import (
     screening_prompt,
 )
 from .repository import StrategyRepository
+
+RECOMMENDATION_WEIGHT_TOLERANCE = Decimal("0.001")
 
 
 class AdvisoryPipeline:
@@ -56,52 +59,24 @@ class AdvisoryPipeline:
         target_weight: Decimal,
         candidate_context: dict[str, Any],
         held_security_ids: Collection[int] = (),
+        portfolio_strategy_recommendation: str = "",
     ) -> tuple[SecurityRecommendation, ...]:
-        response = self.client.chat_json(
-            system_prompt=SCREENING_SYSTEM_PROMPT,
-            user_prompt=screening_prompt(
-                asset_class_code=asset_class_code,
-                target_weight=format(target_weight, ".10f"),
-                candidate_context=candidate_context,
-                held_security_ids=held_security_ids,
-            ),
-            response_schema=RECOMMENDATION_SCHEMA,
-        )
-        raw_recommendations = response.get("recommendations")
-        if not isinstance(raw_recommendations, list) or not raw_recommendations:
-            raise OllamaResponseError("Ollama returned no security recommendations")
-        try:
-            recommendations = tuple(
-                SecurityRecommendation.from_dict(item)
-                for item in raw_recommendations
-            )
-        except (KeyError, TypeError, ValueError) as exc:
-            raise OllamaResponseError(
-                f"Ollama returned an invalid recommendation: {exc}"
-            ) from exc
-
         candidates = {
             int(item["security_id"]): str(item["ticker"]).upper()
             for item in candidate_context.get("securities", [])
         }
-        for recommendation in recommendations:
-            if (
-                recommendation.security_id not in candidates
-                or candidates[recommendation.security_id]
-                != recommendation.ticker.upper()
-            ):
-                raise OllamaResponseError(
-                    f"Recommendation is not in candidate context: "
-                    f"{recommendation.ticker}"
-                )
-        total_weight = sum(
-            (recommendation.target_weight for recommendation in recommendations),
-            Decimal("0"),
+        recommendations = self._screen_with_retry(
+            asset_class_code=asset_class_code,
+            target_weight=target_weight,
+            candidate_context=candidate_context,
+            held_security_ids=held_security_ids,
+            portfolio_strategy_recommendation=portfolio_strategy_recommendation,
+            candidates=candidates,
         )
-        if total_weight != target_weight:
-            raise OllamaResponseError(
-                "Recommendation target weights do not equal the asset-class target"
-            )
+        recommendations = _normalize_recommendation_weights(
+            recommendations,
+            target_weight,
+        )
 
         self.repository.save_recommendations(
             run_id=run_id,
@@ -109,6 +84,61 @@ class AdvisoryPipeline:
             recommendations=recommendations,
         )
         return recommendations
+
+    def _screen_with_retry(
+        self,
+        *,
+        asset_class_code: str,
+        target_weight: Decimal,
+        candidate_context: dict[str, Any],
+        held_security_ids: Collection[int],
+        portfolio_strategy_recommendation: str,
+        candidates: dict[int, str],
+    ) -> tuple[SecurityRecommendation, ...]:
+        user_prompt = screening_prompt(
+            asset_class_code=asset_class_code,
+            target_weight=format(target_weight, ".10f"),
+            candidate_context=candidate_context,
+            held_security_ids=held_security_ids,
+            portfolio_strategy_recommendation=portfolio_strategy_recommendation,
+        )
+        last_error: Exception | None = None
+        for _ in range(2):
+            try:
+                response = self.client.chat_json(
+                    system_prompt=SCREENING_SYSTEM_PROMPT,
+                    user_prompt=user_prompt,
+                    response_schema=RECOMMENDATION_SCHEMA,
+                )
+                raw_recommendations = response.get("recommendations")
+                if not isinstance(raw_recommendations, list) or not raw_recommendations:
+                    raise OllamaResponseError(
+                        "Ollama returned no security recommendations"
+                    )
+                recommendations = tuple(
+                    SecurityRecommendation.from_dict(item)
+                    for item in raw_recommendations
+                )
+                for recommendation in recommendations:
+                    if (
+                        recommendation.security_id not in candidates
+                        or candidates[recommendation.security_id]
+                        != recommendation.ticker.upper()
+                    ):
+                        raise OllamaResponseError(
+                            f"Recommendation is not in candidate context: "
+                            f"{recommendation.ticker}"
+                        )
+                return recommendations
+            except (KeyError, TypeError, ValueError, OllamaResponseError) as exc:
+                last_error = exc
+
+        return _deterministic_fallback_recommendation(
+            candidate_context,
+            held_security_ids=held_security_ids,
+            target_weight=target_weight,
+            reason=f"Advisory Skipped - Syntax Error: {last_error}",
+        )
 
     def screen_portfolio_asset_class(
         self,
@@ -119,6 +149,7 @@ class AdvisoryPipeline:
         target_weight: Decimal,
         fund_data: FundDataExtractor,
         portfolio_data: PortfolioValuationService,
+        portfolio_strategy_recommendation: str = "",
     ) -> tuple[SecurityRecommendation, ...]:
         """Extract candidates and current holdings before asking Ollama to screen."""
         context = fund_data.extract_asset_class(asset_class_code)
@@ -135,4 +166,83 @@ class AdvisoryPipeline:
             target_weight=target_weight,
             candidate_context=context,
             held_security_ids=held_security_ids,
+            portfolio_strategy_recommendation=portfolio_strategy_recommendation,
         )
+
+
+def _normalize_recommendation_weights(
+    recommendations: tuple[SecurityRecommendation, ...],
+    target_weight: Decimal,
+) -> tuple[SecurityRecommendation, ...]:
+    total_weight = sum(
+        (recommendation.target_weight for recommendation in recommendations),
+        Decimal("0"),
+    )
+    if total_weight == 0 and target_weight > 0:
+        adjusted = list(recommendations)
+        adjusted[0] = replace(
+            adjusted[0],
+            target_weight=target_weight,
+        )
+        return tuple(adjusted)
+
+    residual = target_weight - total_weight
+    if residual == 0:
+        return recommendations
+    if abs(residual) > RECOMMENDATION_WEIGHT_TOLERANCE:
+        raise OllamaResponseError(
+            "Recommendation target weights do not equal the asset-class target "
+            f"(sum={total_weight}, target={target_weight})"
+        )
+
+    adjustable_index = max(
+        range(len(recommendations)),
+        key=lambda index: recommendations[index].target_weight,
+    )
+    adjusted_weight = recommendations[adjustable_index].target_weight + residual
+    if adjusted_weight < Decimal("0"):
+        raise OllamaResponseError(
+            "Recommendation target weights do not equal the asset-class target "
+            f"(sum={total_weight}, target={target_weight})"
+        )
+
+    adjusted = list(recommendations)
+    adjusted[adjustable_index] = replace(
+        adjusted[adjustable_index],
+        target_weight=adjusted_weight,
+    )
+    return tuple(adjusted)
+
+
+def _deterministic_fallback_recommendation(
+    candidate_context: dict[str, Any],
+    *,
+    held_security_ids: Collection[int],
+    target_weight: Decimal,
+    reason: str,
+) -> tuple[SecurityRecommendation, ...]:
+    securities = candidate_context.get("securities", [])
+    if not securities:
+        raise OllamaResponseError(reason)
+    held = {int(security_id) for security_id in held_security_ids}
+    selected = next(
+        (
+            security
+            for security in securities
+            if int(security["security_id"]) in held
+        ),
+        securities[0],
+    )
+    security_id = int(selected["security_id"])
+    return (
+        SecurityRecommendation(
+            security_id=security_id,
+            ticker=str(selected["ticker"]),
+            action_type="HOLD" if security_id in held else "BUY",
+            target_weight=target_weight,
+            rationale=(
+                f"{reason}. Deterministic fallback selected "
+                f"{selected['ticker']} from the provided candidate context."
+            ),
+        ),
+    )
