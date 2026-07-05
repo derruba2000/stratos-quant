@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import ssl
+import time
 from typing import Any, Mapping, Protocol
 
 import httpx
@@ -12,6 +14,8 @@ import requests
 from stratos_quant.config import AppConfig, load_settings
 
 from .errors import OllamaError, OllamaResponseError
+
+logger = logging.getLogger(__name__)
 
 
 def _response_excerpt(response: requests.Response | None) -> str:
@@ -84,7 +88,7 @@ class OllamaClient:
         system_prompt: str,
         user_prompt: str,
         response_schema: Mapping[str, Any] | None = None,
-    ) -> str:
+    ) -> str | None:
         payload: dict[str, Any] = {
             "model": self.settings.ollama_model,
             "stream": False,
@@ -97,28 +101,47 @@ class OllamaClient:
             payload["format"] = response_schema
             payload["options"] = {"temperature": 0}
 
-        try:
-            response = self._session.post(
-                f"{self.settings.ollama_base_url}/api/chat",
-                json=payload,
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-            body = response.json()
-        except requests.HTTPError as exc:
-            raise OllamaError(
-                f"Ollama request failed for model {self.settings.ollama_model}: "
-                f"{exc}.{_response_excerpt(exc.response)}"
-            ) from exc
-        except (requests.RequestException, ValueError) as exc:
-            raise OllamaError(
-                f"Ollama request failed for model {self.settings.ollama_model}: {exc}"
-            ) from exc
+        for attempt in range(4):
+            try:
+                response = self._session.post(
+                    f"{self.settings.ollama_base_url}/api/chat",
+                    json=payload,
+                    timeout=self.timeout,
+                )
+                response.raise_for_status()
+                body = response.json()
 
-        content = body.get("message", {}).get("content")
-        if not isinstance(content, str) or not content.strip():
-            raise OllamaResponseError("Ollama returned an empty chat response")
-        return content.strip()
+                content = body.get("message", {}).get("content")
+                if not isinstance(content, str) or not content.strip():
+                    raise OllamaResponseError("Ollama returned an empty chat response")
+                return content.strip()
+
+            except requests.HTTPError as exc:
+                if (
+                    exc.response is not None
+                    and exc.response.status_code == 429
+                ):
+                    if attempt < 3:
+                        delay = 2 ** (attempt + 1)
+                        logger.warning(
+                            f"Ollama 429 error (Too Many Requests). "
+                            f"Retrying in {delay}s... (Attempt {attempt+1}/3)"
+                        )
+                        time.sleep(delay)
+                        continue
+                    else:
+                        logger.error("Ollama max retries reached for 429 error.")
+                        return None
+                raise OllamaError(
+                    f"Ollama request failed for model {self.settings.ollama_model}: "
+                    f"{exc}.{_response_excerpt(exc.response)}"
+                ) from exc
+            except (requests.RequestException, ValueError) as exc:
+                raise OllamaError(
+                    f"Ollama request failed for model {self.settings.ollama_model}: {exc}"
+                ) from exc
+
+        return None
 
     def chat_json(
         self,
@@ -126,12 +149,14 @@ class OllamaClient:
         system_prompt: str,
         user_prompt: str,
         response_schema: Mapping[str, Any],
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | None:
         content = self.chat(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             response_schema=response_schema,
         )
+        if content is None:
+            return None
         try:
             return _loads_json_object(content, provider="Ollama")
         except json.JSONDecodeError as exc:
@@ -150,7 +175,7 @@ class ChatClient(Protocol):
         system_prompt: str,
         user_prompt: str,
         response_schema: Mapping[str, Any] | None = None,
-    ) -> str: ...
+    ) -> str | None: ...
 
     def chat_json(
         self,
@@ -158,7 +183,7 @@ class ChatClient(Protocol):
         system_prompt: str,
         user_prompt: str,
         response_schema: Mapping[str, Any],
-    ) -> dict[str, Any]: ...
+    ) -> dict[str, Any] | None: ...
 
 
 class NvidiaClient:
@@ -214,7 +239,7 @@ class NvidiaClient:
         system_prompt: str,
         user_prompt: str,
         response_schema: Mapping[str, Any] | None = None,
-    ) -> str:
+    ) -> str | None:
         resolved_user_prompt = user_prompt
         if response_schema is not None:
             resolved_user_prompt = (
@@ -222,44 +247,63 @@ class NvidiaClient:
                 f"Schema:\n{json.dumps(response_schema, sort_keys=True)}"
             )
 
-        try:
-            request: dict[str, Any] = {
-                "model": self.settings.nvidia_api_model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": resolved_user_prompt},
-                ],
-                "max_tokens": 4096,
-                "temperature": 0,
-            }
-            if response_schema is not None:
-                request["response_format"] = {"type": "json_object"}
-            response = self._client.chat.completions.create(**request)
-        except OpenAIError as exc:
-            hint = ""
-            if getattr(exc, "status_code", None) == 404:
-                hint = (
-                    " Check NVIDIA_API_MODEL; this usually means the model "
-                    "slug is not available for NVIDIA chat completions or your "
-                    "API key does not have access."
-                )
-            raise OllamaError(
-                "NVIDIA request failed for model "
-                f"{self.settings.nvidia_api_model}: {exc}.{hint}"
-            ) from exc
-        except Exception as exc:
-            raise OllamaError(
-                "NVIDIA request failed for model "
-                f"{self.settings.nvidia_api_model}: {exc}"
-            ) from exc
+        for attempt in range(4):
+            try:
+                request: dict[str, Any] = {
+                    "model": self.settings.nvidia_api_model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": resolved_user_prompt},
+                    ],
+                    "max_tokens": 4096,
+                    "temperature": 0,
+                }
+                if response_schema is not None:
+                    request["response_format"] = {"type": "json_object"}
+                response = self._client.chat.completions.create(**request)
 
-        choices = getattr(response, "choices", None)
-        if not choices:
-            raise OllamaResponseError("NVIDIA returned an empty chat response")
-        content = getattr(getattr(choices[0], "message", None), "content", None)
-        if not isinstance(content, str) or not content.strip():
-            raise OllamaResponseError("NVIDIA returned an empty chat response")
-        return content.strip()
+                choices = getattr(response, "choices", None)
+                if not choices:
+                    raise OllamaResponseError("NVIDIA returned an empty chat response")
+                content = getattr(getattr(choices[0], "message", None), "content", None)
+                if not isinstance(content, str) or not content.strip():
+                    raise OllamaResponseError("NVIDIA returned an empty chat response")
+                return content.strip()
+
+            except OpenAIError as exc:
+                if (
+                    getattr(exc, "status_code", None) == 429
+                    and attempt < 3
+                ):
+                    delay = 2 ** (attempt + 1)
+                    logger.warning(
+                        f"NVIDIA 429 error (Too Many Requests). "
+                        f"Retrying in {delay}s... (Attempt {attempt+1}/3)"
+                    )
+                    time.sleep(delay)
+                    continue
+                elif getattr(exc, "status_code", None) == 429:
+                    logger.error("NVIDIA max retries reached for 429 error.")
+                    return None
+
+                hint = ""
+                if getattr(exc, "status_code", None) == 404:
+                    hint = (
+                        " Check NVIDIA_API_MODEL; this usually means the model "
+                        "slug is not available for NVIDIA chat completions or your "
+                        "API key does not have access."
+                    )
+                raise OllamaError(
+                    "NVIDIA request failed for model "
+                    f"{self.settings.nvidia_api_model}: {exc}.{hint}"
+                ) from exc
+            except Exception as exc:
+                raise OllamaError(
+                    "NVIDIA request failed for model "
+                    f"{self.settings.nvidia_api_model}: {exc}"
+                ) from exc
+
+        return None
 
     def chat_json(
         self,
@@ -267,12 +311,14 @@ class NvidiaClient:
         system_prompt: str,
         user_prompt: str,
         response_schema: Mapping[str, Any],
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | None:
         content = self.chat(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             response_schema=response_schema,
         )
+        if content is None:
+            return None
         try:
             return _loads_json_object(content, provider="NVIDIA")
         except json.JSONDecodeError as exc:

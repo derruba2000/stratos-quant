@@ -20,6 +20,7 @@ class AllocationConstraints:
     min_cash_weight: Decimal | None = None
     soft_max_single_asset_weight: Decimal | None = None
     soft_max_asset_class_weights: Mapping[str, Decimal] | None = None
+    drift_limit: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +80,7 @@ class PortfolioRebalanceEngine:
         *,
         asset_class_map: Mapping[str, str] | None = None,
         rankings: Sequence[str] | Mapping[str, int | float] | None = None,
+        baseline_weights: Mapping[str, Decimal] | None = None,
     ) -> ConstrainedAllocationResult:
         """Return a valid 100% allocation with hard limits enforced.
 
@@ -94,6 +96,10 @@ class PortfolioRebalanceEngine:
                 if _decimal(weight) > ZERO
             }
         )
+
+        if baseline_weights is not None and constraints.drift_limit is not None:
+            self._apply_drift_clipping(weights, baseline_weights)
+
         if cash_code not in weights and (
             constraints.min_cash_weight is not None
             or constraints.max_single_asset_weight is not None
@@ -219,6 +225,7 @@ def _normalize_constraints(
                 constraints.soft_max_asset_class_weights or {}
             ).items()
         },
+        drift_limit=_optional_decimal(constraints.drift_limit),
     )
 
 

@@ -103,17 +103,20 @@ class AdvisoryPipeline:
             portfolio_strategy_recommendation=portfolio_strategy_recommendation,
         )
         last_error: Exception | None = None
-        for _ in range(2):
+        for attempt in range(3):
             try:
                 response = self.client.chat_json(
                     system_prompt=SCREENING_SYSTEM_PROMPT,
                     user_prompt=user_prompt,
                     response_schema=RECOMMENDATION_SCHEMA,
                 )
+                if response is None:
+                    raise OllamaResponseError("LLM client returned None (likely due to rate limiting)")
+
                 raw_recommendations = response.get("recommendations")
                 if not isinstance(raw_recommendations, list) or not raw_recommendations:
                     raise OllamaResponseError(
-                        "Ollama returned no security recommendations"
+                        "Ollama returned no security recommendations in the array"
                     )
                 recommendations = tuple(
                     SecurityRecommendation.from_dict(item)
@@ -130,14 +133,14 @@ class AdvisoryPipeline:
                             f"{recommendation.ticker}"
                         )
                 return recommendations
-            except (KeyError, TypeError, ValueError, OllamaResponseError) as exc:
+            except (KeyError, TypeError, ValueError, OllamaResponseError, AttributeError) as exc:
                 last_error = exc
 
         return _deterministic_fallback_recommendation(
             candidate_context,
             held_security_ids=held_security_ids,
             target_weight=target_weight,
-            reason=f"Advisory Skipped - Syntax Error: {last_error}",
+            reason=f"Advisory Skipped - LLM Failure/Empty Output: {last_error}",
         )
 
     def screen_portfolio_asset_class(

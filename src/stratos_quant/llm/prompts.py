@@ -45,9 +45,10 @@ Your selection criteria must strictly follow this investment philosophy:
    over a new execution (BUY) to minimize slippage and tax drag.
 4. Liquidity: Favor funds with larger Total Net Assets (TNA).
 
-Return only the requested JSON structure. Do not invent missing metrics. Provide
-a clear, metric-driven rationale for each selection quoting the specific data
-points used.
+Return only a single valid JSON object matching the requested schema. DO NOT 
+wrap your response in Markdown code blocks (e.g., ```json ... ```) and do not 
+include any introductory or concluding text. Provide a clear, metric-driven 
+rationale for each selection quoting the specific data points used.
 """.strip()
 
 
